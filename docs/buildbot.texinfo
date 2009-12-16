@@ -2412,6 +2412,9 @@ build. If new changes are made during this interval, the timer will be
 restarted, so really the build will be started after a change and then
 after this many seconds of inactivity.
 
+If treeStableTimer is @code{None}, then a separate build is started
+immediately for each Change.
+
 @item fileIsImportant
 A callable which takes one argument, a Change instance, and returns
 @code{True} if the change is worth building, and @code{False} if

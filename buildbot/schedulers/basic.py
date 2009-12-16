@@ -146,7 +146,9 @@ class Scheduler(_Base, ClassifierMixin):
         @param treeStableTimer: the duration, in seconds, for which the tree
                                 must remain unchanged before a build is
                                 triggered. This is intended to avoid builds
-                                of partially-committed fixes.
+                                of partially-committed fixes. If None, then
+                                a separate build will be made for each
+                                Change, regardless of when they arrive.
         @param builderNames: a list of Builder names. When this Scheduler
                              decides to start a set of builds, they will be
                              run on the Builders named by this list.
@@ -230,9 +232,16 @@ class Scheduler(_Base, ClassifierMixin):
 
     def _add_build_and_remove_changes(self, t, all_changes):
         db = self.parent.db
-        ss = SourceStamp(changes=all_changes)
-        ssid = db.get_sourcestampid(ss, t)
-        bsid = self.create_buildset(ssid, "scheduler", t)
+        if self.treeStableTimer is None:
+            # each Change gets a separate build
+            for c in all_changes:
+                ss = SourceStamp(changes=[c])
+                ssid = db.get_sourcestampid(ss, t)
+                self.create_buildset(ssid, "scheduler", t)
+        else:
+            ss = SourceStamp(changes=all_changes)
+            ssid = db.get_sourcestampid(ss, t)
+            self.create_buildset(ssid, "scheduler", t)
 
         # and finally retire the changes from scheduler_changes
         changeids = [c.number for c in all_changes]
