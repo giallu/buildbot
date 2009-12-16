@@ -376,6 +376,7 @@ class Builder(pb.Referenceable, service.MultiService):
         self.buildHorizon = setup.get('buildHorizon')
         self.logHorizon = setup.get('logHorizon')
         self.eventHorizon = setup.get('eventHorizon')
+        self.mergeRequests = setup.get('mergeRequests', True)
 
         # build/wannabuild slots: Build objects move along this sequence
         self.building = []
@@ -504,7 +505,9 @@ class Builder(pb.Referenceable, service.MultiService):
             requests.remove(breq)
             merged_requests = [breq]
             for other_breq in requests[:]:
-                if self.botmaster.shouldMergeRequests(self, breq, other_breq):
+                if (self.mergeRequests and
+                    self.botmaster.shouldMergeRequests(self, breq, other_breq)
+                    ):
                     requests.remove(other_breq)
                     merged_requests.append(other_breq)
             assignments[sb] = merged_requests
