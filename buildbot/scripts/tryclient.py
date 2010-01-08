@@ -508,6 +508,7 @@ class Try(pb.Referenceable):
         d = self.running = defer.Deferred()
         if self.buildsetStatus:
             self._getStatus_1()
+            return self.running
         # contact the status port
         # we're probably using the ssh style
         master = self.getopt("master")
@@ -651,7 +652,7 @@ class Try(pb.Referenceable):
             if text:
                 t += " (%s)" % " ".join(text)
             print t
-            if self.results[n] != builder.SUCCESS:
+            if code != builder.SUCCESS:
                 happy = False
 
         if happy:
