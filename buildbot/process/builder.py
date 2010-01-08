@@ -39,9 +39,9 @@ class AbstractSlaveBuilder(pb.Referenceable):
     def __repr__(self):
         r = ["<", self.__class__.__name__]
         if self.builder_name:
-            r.extend([" builder=", self.builder_name])
+            r.extend([" builder=", repr(self.builder_name)])
         if self.slave:
-            r.extend([" slave=", self.slave.slavename])
+            r.extend([" slave=", repr(self.slave.slavename)])
         r.append(">")
         return ''.join(r)
 
@@ -444,7 +444,7 @@ class Builder(pb.Referenceable, service.MultiService):
         return diffs
 
     def __repr__(self):
-        return "<Builder '%s' at %d>" % (self.name, id(self))
+        return "<Builder '%r' at %d>" % (self.name, id(self))
 
     def triggerNewBuildCheck(self):
         self.botmaster.triggerNewBuildCheck()

@@ -56,6 +56,8 @@ from twisted.internet.defer import waitForDeferred, deferredGenerator
 # use a predetermined Internet-domain port number, unless we want to go
 # all-out: bind the listen socket ourselves and pretend to be inetd.
 
+BUILDERNAME = u"vç"
+
 config_vc = """
 from buildbot.process import factory
 from buildbot.steps import source
@@ -70,7 +72,7 @@ c = {}
 c['slaves'] = [BuildSlave('bot1', 'sekrit')]
 c['schedulers'] = []
 c['builders'] = [
-    BuilderConfig(name='vç', slavename='bot1', factory=f1, builddir='vc-dir'),
+    BuilderConfig(name=u'v\u00e7', slavename='bot1', factory=f1, builddir='vc-dir'),
 ]
 c['slavePortnum'] = 0
 # do not compress logs in tests
@@ -438,7 +440,7 @@ class VCBase(SignalMixin):
                                self.slavebase, keepalive=0, usePTY=False)
         self.slave = slave
         slave.startService()
-        d = self.master.botmaster.waitUntilBuilderAttached("vç")
+        d = self.master.botmaster.waitUntilBuilderAttached(BUILDERNAME)
         return d
 
     def loadConfig(self, config):
@@ -447,7 +449,7 @@ class VCBase(SignalMixin):
         # to stop and restart the slave.
         d = defer.succeed(None)
         if self.slave:
-            d = self.master.botmaster.waitUntilBuilderDetached("vç")
+            d = self.master.botmaster.waitUntilBuilderDetached(BUILDERNAME)
             self.slave.stopService()
         d.addCallback(lambda res: self.master.loadConfig(config))
         d.addCallback(lambda res: self.connectSlave())
@@ -465,7 +467,7 @@ class VCBase(SignalMixin):
         if ss is None:
             ss = SourceStamp()
 
-        d = run_one_build(c, "vç", ss, "test_vc forced build")
+        d = run_one_build(c, BUILDERNAME, ss, "test_vc forced build")
         d.addCallback(self._doBuild_1, shouldSucceed)
         return d
     def _doBuild_1(self, bs, shouldSucceed):
@@ -1078,7 +1080,7 @@ class VCBase(SignalMixin):
         self.tearDownSignalHandler()
         d = defer.succeed(None)
         if self.slave:
-            d2 = self.master.botmaster.waitUntilBuilderDetached("vç")
+            d2 = self.master.botmaster.waitUntilBuilderDetached(BUILDERNAME)
             d.addCallback(lambda res: self.slave.stopService())
             d.addCallback(lambda res: d2)
         if self.master:
