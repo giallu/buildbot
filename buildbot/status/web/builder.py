@@ -9,7 +9,6 @@ from buildbot import interfaces
 from buildbot.status.web.base import HtmlResource, BuildLineMixin, \
     path_to_build, path_to_slave, path_to_builder, path_to_change, \
     getAndCheckProperties
-from buildbot.process.base import BuildRequest
 from buildbot.sourcestamp import SourceStamp
 
 from buildbot.status.web.build import BuildsResource, StatusResourceBuild
@@ -167,11 +166,9 @@ class StatusResourceBuilder(HtmlResource, BuildLineMixin):
         # now, so someone can write this support. but it requires a
         # buildbot.changes.changes.Change instance which is tedious at this
         # stage to compute
-        s = SourceStamp(branch=branch, revision=revision)
-        req = BuildRequest(r, s, builderName=self.builder_status.getName(),
-                           properties=properties)
+        ss = SourceStamp(branch=branch, revision=revision)
         try:
-            self.builder_control.requestBuildSoon(req)
+            self.builder_control.submitBuildRequest(ss, r, properties, now=True)
         except interfaces.NoSlaveError:
             # TODO: tell the web user that their request could not be
             # honored

@@ -13,7 +13,6 @@ from twisted.application import internet
 from buildbot import interfaces, util
 from buildbot import version
 from buildbot.sourcestamp import SourceStamp
-from buildbot.process.base import BuildRequest
 from buildbot.status import base
 from buildbot.status.builder import SUCCESS, WARNINGS, FAILURE, EXCEPTION
 from buildbot.scripts.runner import ForceOptions
@@ -38,12 +37,11 @@ class IrcBuildRequest:
             self.parent.send("The build has been queued, I'll give a shout"
                              " when it starts")
 
-    def started(self, c):
+    def started(self, s):
         self.hasStarted = True
         if self.timer:
             self.timer.cancel()
             del self.timer
-        s = c.getStatus()
         eta = s.getETA()
         response = "build #%d forced" % s.getNumber()
         if eta is not None:
@@ -419,18 +417,17 @@ class Contact:
 
         bc = self.getControl(which)
 
-        r = "forced: by %s: %s" % (self.describeUser(who), reason)
         # TODO: maybe give certain users the ability to request builds of
         # certain branches
-        s = SourceStamp(branch=branch, revision=revision)
-        req = BuildRequest(r, s, which)
+        reason = "forced: by %s: %s" % (self.describeUser(who), reason)
+        ss = SourceStamp(branch=branch, revision=revision)
         try:
-            bc.requestBuildSoon(req)
+            brs = bc.submitBuildRequest(ss, reason, now=True)
         except interfaces.NoSlaveError:
             self.send("sorry, I can't force a build: all slaves are offline")
             return
         ireq = IrcBuildRequest(self)
-        req.subscribe(ireq.started)
+        brs.subscribe(ireq.started)
 
 
     command_FORCE.usage = "force build <which> <reason> - Force a build"

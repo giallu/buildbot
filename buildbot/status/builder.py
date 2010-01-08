@@ -6,6 +6,7 @@ from twisted.persisted import styles
 from twisted.internet import reactor, defer, threads
 from twisted.protocols import basic
 from buildbot.process.properties import Properties
+from buildbot.eventual import eventually
 
 import weakref
 import os, shutil, sys, re, urllib, itertools
@@ -167,7 +168,7 @@ class LogFileProducer:
         # has a performance hit, but I'm going to assume that the log files
         # are not retrieved frequently enough for it to be an issue.
 
-        reactor.callLater(0, self._resumeProducing)
+        eventually(self._resumeProducing)
 
     def _resumeProducing(self):
         self.paused = False
@@ -690,103 +691,95 @@ class TestResult:
 class BuildSetStatus:
     implements(interfaces.IBuildSetStatus)
 
-    def __init__(self, source, reason, builderNames, bsid=None):
-        self.source = source
-        self.reason = reason
-        self.builderNames = builderNames
+    def __init__(self, bsid, status, db):
         self.id = bsid
-        self.successWatchers = []
-        self.finishedWatchers = []
-        self.stillHopeful = True
-        self.finished = False
+        self.status = status
+        self.db = db
 
-    def setBuildRequestStatuses(self, buildRequestStatuses):
-        self.buildRequests = buildRequestStatuses
-    def setResults(self, results):
-        # the build set succeeds only if all its component builds succeed
-        self.results = results
-    def giveUpHope(self):
-        self.stillHopeful = False
-
-
-    def notifySuccessWatchers(self):
-        for d in self.successWatchers:
-            d.callback(self)
-        self.successWatchers = []
-
-    def notifyFinishedWatchers(self):
-        self.finished = True
-        for d in self.finishedWatchers:
-            d.callback(self)
-        self.finishedWatchers = []
+    def _get_info(self):
+        return self.db.get_buildset_info(self.id)
 
     # methods for our clients
 
     def getSourceStamp(self):
-        return self.source
+        (external_idstring, reason, ssid, complete, results) = self._get_info()
+        return self.db.getSourceStampNumberedNow(ssid)
+
     def getReason(self):
-        return self.reason
+        (external_idstring, reason, ssid, complete, results) = self._get_info()
+        return reason
     def getResults(self):
-        return self.results
+        (external_idstring, reason, ssid, complete, results) = self._get_info()
+        return results
     def getID(self):
-        return self.id
+        (external_idstring, reason, ssid, complete, results) = self._get_info()
+        return external_idstring
+
+    def getBuilderNamesAndBuildRequests(self):
+        brs = {}
+        brids = self.db.get_buildrequestids_for_buildset(self.id)
+        for (buildername, brid) in brids.items():
+            brs[buildername] = BuildRequestStatus(brid, self.status, self.db)
+        return brs
 
     def getBuilderNames(self):
-        return self.builderNames
-    def getBuildRequests(self):
-        return self.buildRequests
-    def isFinished(self):
-        return self.finished
-    
-    def waitUntilSuccess(self):
-        if self.finished or not self.stillHopeful:
-            # the deferreds have already fired
-            return defer.succeed(self)
-        d = defer.Deferred()
-        self.successWatchers.append(d)
-        return d
+        brs = self.db.get_buildrequestids_for_buildset(self.id)
+        return sorted(brs.keys())
 
+    def getBuildRequests(self):
+        brs = self.db.get_buildrequestids_for_buildset(self.id)
+        return [BuildRequestStatus(brid, self.status, self.db)
+                for brid in brs.values()]
+
+    def isFinished(self):
+        (external_idstring, reason, ssid, complete, results) = self._get_info()
+        return complete
+
+    def waitUntilSuccess(self):
+        return self.status._buildset_waitUntilSuccess(self.id)
     def waitUntilFinished(self):
-        if self.finished:
-            return defer.succeed(self)
-        d = defer.Deferred()
-        self.finishedWatchers.append(d)
-        return d
+        return self.status._buildset_waitUntilFinished(self.id)
 
 class BuildRequestStatus:
     implements(interfaces.IBuildRequestStatus)
 
-    def __init__(self, source, builderName):
-        self.source = source
-        self.builderName = builderName
-        self.builds = [] # list of BuildStatus objects
-        self.observers = []
-        self.submittedAt = None
+    def __init__(self, brid, status, db):
+        self.brid = brid
+        self.status = status
+        self.db = db
 
     def buildStarted(self, build):
-        self.builds.append(build)
-        for o in self.observers[:]:
-            o(build)
+        self.status._buildrequest_buildStarted(build.status)
+        self.builds.append(build.status)
 
     # methods called by our clients
     def getSourceStamp(self):
-        return self.source
+        br = self.db.getBuildRequestWithNumber(self.brid)
+        return br.source
     def getBuilderName(self):
-        return self.builderName
+        br = self.db.getBuildRequestWithNumber(self.brid)
+        return br.builderName
     def getBuilds(self):
-        return self.builds
+        builder = self.status.getBuilder(self.getBuilderName())
+        builds = []
+        buildnums = sorted(self.db.get_buildnums_for_brid(self.brid))
+        for buildnum in buildnums:
+            bs = builder.getBuild(buildnum)
+            if bs:
+                builds.append(bs)
+        return builds
 
     def subscribe(self, observer):
-        self.observers.append(observer)
-        for b in self.builds:
-            observer(b)
+        oldbuilds = self.getBuilds()
+        for bs in oldbuilds:
+            eventually(observer, bs)
+        self.status._buildrequest_subscribe(self.brid, observer)
     def unsubscribe(self, observer):
-        self.observers.remove(observer)
+        self.status._buildrequest_unsubscribe(observer)
 
     def getSubmitTime(self):
-        return self.submittedAt
-    def setSubmitTime(self, t):
-        self.submittedAt = t
+        br = self.db.getBuildRequestWithNumber(self.brid)
+        return br.submittedAt
 
 
 class BuildStepStatus(styles.Versioned):
@@ -1092,7 +1085,6 @@ class BuildStatus(styles.Versioned):
     reason = None
     changes = []
     blamelist = []
-    requests = []
     progress = None
     started = None
     finished = None
@@ -1123,7 +1115,6 @@ class BuildStatus(styles.Versioned):
         self.steps = []
         self.testResults = {}
         self.properties = Properties()
-        self.requests = []
 
     def __repr__(self):
         return "<%s #%s>" % (self.__class__.__name__, self.number)
@@ -1160,9 +1151,6 @@ class BuildStatus(styles.Versioned):
 
     def getChanges(self):
         return self.changes
-
-    def getRequests(self):
-        return self.requests
 
     def getResponsibleUsers(self):
         return self.blamelist
@@ -1306,9 +1294,6 @@ class BuildStatus(styles.Versioned):
         self.source = sourceStamp
         self.changes = self.source.changes
 
-    def setRequests(self, requests):
-        self.requests = requests
-
     def setReason(self, reason):
         self.reason = reason
     def setBlamelist(self, blamelist):
@@ -1415,7 +1400,7 @@ class BuildStatus(styles.Versioned):
             # was interrupted. The builder will have a 'shutdown' event, but
             # someone looking at just this build will be confused as to why
             # the last log is truncated.
-        for k in 'builder', 'watchers', 'updates', 'requests', 'finishedWatchers':
+        for k in 'builder', 'watchers', 'updates', 'finishedWatchers':
             if k in d: del d[k]
         return d
 
@@ -2115,7 +2100,7 @@ class SlaveStatus:
         """Set the graceful shutdown flag, and notify all the watchers"""
         self.graceful_shutdown = graceful
         for cb in self.graceful_callbacks:
-            reactor.callLater(0, cb, graceful)
+            eventually(cb, graceful)
     def addGracefulWatcher(self, watcher):
         """Add watcher to the list of watchers to be notified when the
         graceful shutdown flag is changed."""
@@ -2133,7 +2118,7 @@ class Status:
     """
     implements(interfaces.IStatus)
 
-    def __init__(self, botmaster, basedir):
+    def __init__(self, botmaster, db, basedir):
         """
         @type  botmaster: L{buildbot.master.BotMaster}
         @param botmaster: the Status object uses C{.botmaster} to get at
@@ -2148,9 +2133,9 @@ class Status:
                         pickles) can be stored
         """
         self.botmaster = botmaster
+        self.db = db
         self.basedir = basedir
         self.watchers = []
-        self.activeBuildSets = []
         assert os.path.isdir(basedir)
         # compress logs bigger than 4k, a good default on linux
         self.logCompressionLimit = 4*1024
@@ -2158,6 +2143,12 @@ class Status:
         # No default limit to the log size
         self.logMaxSize = None
         self.logMaxTailSize = None
+
+        self._buildreq_observers = util.DictOfSets()
+        self.db.subscribe_to("add-build", self._db_builds_changed)
+        self._buildset_success_waiters = util.DictOfSets()
+        self._buildset_finished_waiters = util.DictOfSets()
+        self.db.subscribe_to("modify-buildset", self._db_buildsets_changed)
 
 
     # methods called by our clients
@@ -2231,7 +2222,7 @@ class Status:
         return list(self.botmaster.parent.change_svc)
 
     def getChange(self, number):
-        return self.botmaster.parent.change_svc.getChangeNumbered(number)
+        return self.botmaster.parent.change_svc.getChangeNumberedNow(number)
 
     def getSchedulers(self):
         return self.botmaster.parent.allSchedulers()
@@ -2261,7 +2252,8 @@ class Status:
         return self.botmaster.slaves[slavename].slave_status
 
     def getBuildSets(self):
-        return self.activeBuildSets[:]
+        return [BuildSetStatus(bsid, self, self.db)
+                for bsid in self.db.get_active_buildset_ids()]
 
     def generateFinishedBuilds(self, builders=[], branches=[],
                                num_builds=None, finished_before=None,
@@ -2385,7 +2377,60 @@ class Status:
             t.builderRemoved(name)
 
     def buildsetSubmitted(self, bss):
-        self.activeBuildSets.append(bss)
-        bss.waitUntilFinished().addCallback(self.activeBuildSets.remove)
         for t in self.watchers:
             t.buildsetSubmitted(bss)
+
+    def buildreqs_retired(self, requests):
+        for r in requests:
+            #r.id: notify subscribers (none right now)
+            # r.bsid: check for completion, notify subscribers, unsubscribe
+            pass
+
+    def get_buildreq_for_id(self, brid):
+        return BuildRequestStatus(brid, self, self.db)
+
+    def _db_builds_changed(self, category, bid):
+        brid,buildername,buildnum = self.db.get_build_info(bid)
+        if brid in self._buildreq_observers:
+            bs = self.getBuilder(buildername).getBuild(buildnum)
+            if bs:
+                for o in self._buildreq_observers[brid]:
+                    eventually(o, bs)
+
+    def _buildrequest_subscribe(self, brid, observer):
+        self._buildreq_observers.add(brid, observer)
+
+    def _buildrequest_unsubscribe(self, brid, observer):
+        self._buildreq_observers.remove(brid, observer)
+
+    def _buildset_waitUntilSuccess(self, bsid):
+        d = defer.Deferred()
+        self._buildset_success_waiters.add(bsid, d)
+        # now check for a buildset which was already successful
+        self._db_buildsets_changed("modify-buildset", bsid)
+        return d
+    def _buildset_waitUntilFinished(self, bsid):
+        d = defer.Deferred()
+        self._buildset_finished_waiters.add(bsid, d)
+        self._db_buildsets_changed("modify-buildset", bsid)
+        return d
+
+    def _db_buildsets_changed(self, category, *bsids):
+        for bsid in bsids:
+            self._db_buildset_changed(bsid)
+
+    def _db_buildset_changed(self, bsid):
+        # check bsid to see if it's successful or finished, and notify anyone
+        # who cares
+        if (bsid not in self._buildset_success_waiters
+            and bsid not in self._buildset_finished_waiters):
+            return
+        successful,finished = self.db.examine_buildset(bsid)
+        bss = BuildSetStatus(bsid, self, self.db)
+        if successful:
+            for d in self._buildset_success_waiters.pop(bsid):
+                eventually(d.callback, bss)
+        if finished:
+            for d in self._buildset_finished_waiters.pop(bsid):
+                eventually(d.callback, bss)
+
