@@ -15,16 +15,19 @@ from twisted.web import client, static, server
 from twisted.python import log
 #log.startLogging(sys.stderr)
 
-from buildbot import master, interfaces
+from buildbot import master, interfaces, db
+from buildbot.buildrequest import BuildRequest
 from buildbot.slave import bot, commands
 from buildbot.slave.commands import rmdirRecursive
 from buildbot.status.builder import SUCCESS, FAILURE
 from buildbot.process import base
+from buildbot.process.properties import Properties
 from buildbot.steps import source
 from buildbot.changes import changes
 from buildbot.sourcestamp import SourceStamp
 from buildbot.scripts import tryclient
 from buildbot.test.runutils import SignalMixin, myGetProcessOutputAndValue
+from buildbot.test.runutils import run_one_build
 
 #step.LoggedRemoteCommand.debug = True
 
@@ -414,9 +417,12 @@ class VCBase(SignalMixin):
     def _setUp1(self, res):
         self.helper = VCS.getHelper(self.vc_name)
 
+        # TODO: put each test in a separate basedir
         if os.path.exists("basedir"):
             rmdirRecursive("basedir")
         os.mkdir("basedir")
+        spec = db.DB("sqlite3", os.path.join("basedir", "state.sqlite"))
+        db.create_db(spec)
         self.master = master.BuildMaster("basedir")
         self.slavebase = os.path.abspath("slavebase")
         if os.path.exists(self.slavebase):
@@ -456,13 +462,10 @@ class VCBase(SignalMixin):
 
     def doBuild(self, shouldSucceed=True, ss=None):
         c = interfaces.IControl(self.master)
-
         if ss is None:
             ss = SourceStamp()
-        #print "doBuild(ss: b=%s rev=%s)" % (ss.branch, ss.revision)
-        req = base.BuildRequest("test_vc forced build", ss, 'test_builder')
-        d = req.waitUntilFinished()
-        c.getBuilder("vç").requestBuild(req)
+
+        d = run_one_build(c, "vç", ss, "test_vc forced build")
         d.addCallback(self._doBuild_1, shouldSucceed)
         return d
     def _doBuild_1(self, bs, shouldSucceed):
@@ -528,12 +531,11 @@ class VCBase(SignalMixin):
             s += ", %s=%s" % (k, repr(v))
         s += ")"
         config = config_vc % s
-        
-        m.loadConfig(config % 'clobber')
+
         m.readConfig = True
         m.startService()
-
-        d = self.connectSlave()
+        d = m.loadConfig(config % 'clobber')
+        d.addCallback(lambda ign: self.connectSlave())
         d.addCallback(lambda res: log.msg("testing clobber"))
         d.addCallback(self._do_vctest_clobber)
         d.addCallback(lambda res: log.msg("doing update"))
@@ -760,13 +762,12 @@ class VCBase(SignalMixin):
             self.patch = (2, p2_diff)
         else:
             raise NotImplementedError
-        m.loadConfig(self.config % "clobber")
         m.readConfig = True
         m.startService()
+        d = m.loadConfig(self.config % "clobber")
+        d.addCallback(lambda ign: self.connectSlave())
 
         ss = SourceStamp(revision=self.helper.trunk[-1], patch=self.patch)
-
-        d = self.connectSlave()
         d.addCallback(lambda res: self.doBuild(ss=ss))
         d.addCallback(self._doPatch_1)
         return d
@@ -855,12 +856,11 @@ class VCBase(SignalMixin):
         s += ")"
         config = config_vc % s
 
-        m.loadConfig(config)
         m.readConfig = True
         m.startService()
-
-        self.connectSlave()
-        d = self.doBuild(shouldSucceed) # initial checkout
+        d = m.loadConfig(config)
+        d.addCallback(lambda ign: self.connectSlave())
+        d.addCallback(lambda ign: self.doBuild(shouldSucceed)) #initial checkout
         return d
 
     def do_branch(self):
@@ -876,12 +876,12 @@ class VCBase(SignalMixin):
         s += ")"
         self.config = config_vc % s
 
-        m.loadConfig(self.config % "update")
         m.readConfig = True
         m.startService()
+        d = m.loadConfig(self.config % "update")
 
         # first we do a build of the trunk
-        d = self.connectSlave()
+        d.addCallback(lambda ign: self.connectSlave())
         d.addCallback(lambda res: self.doBuild(ss=SourceStamp()))
         d.addCallback(self._doBranch_1)
         return d
@@ -948,11 +948,10 @@ class VCBase(SignalMixin):
         s += ")"
         config = config_vc % s
 
-        m.loadConfig(config % 'clobber')
         m.readConfig = True
         m.startService()
-
-        d = self.connectSlave()
+        d = m.loadConfig(config % 'clobber')
+        d.addCallback(lambda ign: self.connectSlave())
 
         # then set up the "developer's tree". first we modify a tree from the
         # head of the trunk
@@ -1377,7 +1376,7 @@ class SVNHelper(BaseHelper):
         rmdirRecursive(tmp)
         m = re.search(r'Committed revision (\d+)\.', out)
         assert m.group(1) == "1" # first revision is always "1"
-        self.addTrunkRev(int(m.group(1)))
+        self.addTrunkRev(m.group(1))
 
         w = self.dovc(self.repbase,
                       ['checkout',  self.svnurl_trunk,  'svntmp'])
@@ -1393,7 +1392,7 @@ class SVNHelper(BaseHelper):
         yield w; out = w.getResult()
         rmdirRecursive(tmp)
         m = re.search(r'Committed revision (\d+)\.', out)
-        self.addBranchRev(int(m.group(1)))
+        self.addBranchRev(m.group(1))
     createRepository = deferredGenerator(createRepository)
 
     def vc_revise(self):
@@ -1409,7 +1408,7 @@ class SVNHelper(BaseHelper):
         w = self.dovc(tmp, ['commit', '-m',  'revised_to_%d' % self.version])
         yield w; out = w.getResult()
         m = re.search(r'Committed revision (\d+)\.', out)
-        self.addTrunkRev(int(m.group(1)))
+        self.addTrunkRev(m.group(1))
         rmdirRecursive(tmp)
     vc_revise = deferredGenerator(vc_revise)
 
@@ -2322,7 +2321,7 @@ class BzrHelper(BaseHelper):
             colon = line.index(":")
             key, value = line[:colon], line[colon+2:]
             if key == "revno":
-                return int(value)
+                return value
         raise RuntimeError("unable to find revno: in bzr output: '%s'" % out)
 
     def createRepository(self):
@@ -3163,7 +3162,8 @@ class Sources(unittest.TestCase):
         return changes.Change("fred", [], "", when=when, revision=revision)
 
     def testCVS1(self):
-        r = base.BuildRequest("forced build", SourceStamp(), 'test_builder')
+        r = BuildRequest("forced build", SourceStamp(), 'test_builder',
+                         Properties())
         b = base.Build([r])
         s = source.CVS(cvsroot=None, cvsmodule=None)
         s.setBuild(b)
@@ -3174,7 +3174,8 @@ class Sources(unittest.TestCase):
         c.append(self.makeChange("Wed, 08 Sep 2004 09:00:00 -0700"))
         c.append(self.makeChange("Wed, 08 Sep 2004 09:01:00 -0700"))
         c.append(self.makeChange("Wed, 08 Sep 2004 09:02:00 -0700"))
-        r = base.BuildRequest("forced", SourceStamp(changes=c), 'test_builder')
+        r = BuildRequest("forced", SourceStamp(changes=c), 'test_builder',
+                         Properties())
         submitted = "Wed, 08 Sep 2004 09:04:00 -0700"
         r.submittedAt = mktime_tz(parsedate_tz(submitted))
         b = base.Build([r])
@@ -3188,7 +3189,8 @@ class Sources(unittest.TestCase):
         c.append(self.makeChange("Wed, 08 Sep 2004 09:00:00 -0700"))
         c.append(self.makeChange("Wed, 08 Sep 2004 09:01:00 -0700"))
         c.append(self.makeChange("Wed, 08 Sep 2004 09:02:00 -0700"))
-        r = base.BuildRequest("forced", SourceStamp(changes=c), 'test_builder')
+        r = BuildRequest("forced", SourceStamp(changes=c), 'test_builder',
+                         Properties())
         submitted = "Wed, 08 Sep 2004 09:04:00 -0700"
         r.submittedAt = mktime_tz(parsedate_tz(submitted))
         b = base.Build([r])
@@ -3202,13 +3204,15 @@ class Sources(unittest.TestCase):
         c.append(self.makeChange("Wed, 08 Sep 2004 09:00:00 -0700"))
         c.append(self.makeChange("Wed, 08 Sep 2004 09:01:00 -0700"))
         c.append(self.makeChange("Wed, 08 Sep 2004 09:02:00 -0700"))
-        r1 = base.BuildRequest("forced", SourceStamp(changes=c), 'test_builder')
+        r1 = BuildRequest("forced", SourceStamp(changes=c), 'test_builder',
+                          Properties())
         submitted = "Wed, 08 Sep 2004 09:04:00 -0700"
         r1.submittedAt = mktime_tz(parsedate_tz(submitted))
 
         c = []
         c.append(self.makeChange("Wed, 08 Sep 2004 09:05:00 -0700"))
-        r2 = base.BuildRequest("forced", SourceStamp(changes=c), 'test_builder')
+        r2 = BuildRequest("forced", SourceStamp(changes=c), 'test_builder',
+                          Properties())
         submitted = "Wed, 08 Sep 2004 09:07:00 -0700"
         r2.submittedAt = mktime_tz(parsedate_tz(submitted))
 
@@ -3219,7 +3223,7 @@ class Sources(unittest.TestCase):
                              "Wed, 08 Sep 2004 16:06:00 -0000")
 
     def testSVN1(self):
-        r = base.BuildRequest("forced", SourceStamp(), 'test_builder')
+        r = BuildRequest("forced", SourceStamp(), 'test_builder', Properties())
         b = base.Build([r])
         s = source.SVN(svnurl="dummy")
         s.setBuild(b)
@@ -3227,10 +3231,11 @@ class Sources(unittest.TestCase):
 
     def testSVN2(self):
         c = []
-        c.append(self.makeChange(revision=4))
-        c.append(self.makeChange(revision=10))
-        c.append(self.makeChange(revision=67))
-        r = base.BuildRequest("forced", SourceStamp(changes=c), 'test_builder')
+        c.append(self.makeChange(revision="4"))
+        c.append(self.makeChange(revision="10"))
+        c.append(self.makeChange(revision="67"))
+        r = BuildRequest("forced", SourceStamp(changes=c), 'test_builder',
+                         Properties())
         b = base.Build([r])
         s = source.SVN(svnurl="dummy")
         s.setBuild(b)

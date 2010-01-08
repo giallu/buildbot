@@ -1,9 +1,10 @@
 # -*- test-case-name: buildbot.test.test_changes -*-
 
+import os
 from twisted.trial import unittest
 from twisted.internet import defer, reactor
 
-from buildbot import master
+from buildbot import master, db
 from buildbot.changes import pb
 from buildbot.scripts import runner
 
@@ -123,8 +124,6 @@ c['change_source'] = pb.PBChangeSource(port=None)
 """
 
 class Sender(unittest.TestCase):
-    def setUp(self):
-        self.master = master.BuildMaster(".")
     def tearDown(self):
         d = defer.maybeDeferred(self.master.stopService)
         # TODO: something in Twisted-2.0.0 (and probably 2.0.1) doesn't shut
@@ -141,10 +140,14 @@ class Sender(unittest.TestCase):
         return d
 
     def testSender(self):
-        self.master.loadConfig(config_empty)
+        basedir = "changes/Sender/sender"
+        if not os.path.exists(basedir):
+            os.makedirs(basedir)
+        spec = db.DB("sqlite3", os.path.join(basedir, "state.sqlite"))
+        db.create_db(spec)
+        self.master = master.BuildMaster(basedir, db=spec)
+        self.master.readConfig = True
         self.master.startService()
-        # TODO: BuildMaster.loadChanges replaces the change_svc object, so we
-        # have to load it twice. Clean this up.
         d = self.master.loadConfig(config_sender)
         d.addCallback(self._testSender_1)
         return d
@@ -166,8 +169,7 @@ class Sender(unittest.TestCase):
 
     def _testSender_2(self, res):
         # now check that the change was received
-        self.failUnlessEqual(len(self.cm.changes), 1)
-        c = self.cm.changes.pop()
+        c = self.cm.getChangeNumberedNow(1)
         self.failUnlessEqual(c.who, "alice")
         self.failUnlessEqual(c.files, ["foo.c"])
         self.failUnlessEqual(c.comments, "")
@@ -182,8 +184,7 @@ class Sender(unittest.TestCase):
         return d
 
     def _testSender_3(self, res):
-        self.failUnlessEqual(len(self.cm.changes), 1)
-        c = self.cm.changes.pop()
+        c = self.cm.getChangeNumberedNow(2)
         self.failUnlessEqual(c.who, "alice")
         self.failUnlessEqual(c.files, ["foo.c"])
         self.failUnlessEqual(c.comments, "test change")
@@ -203,8 +204,7 @@ class Sender(unittest.TestCase):
         return d
 
     def _testSender_4(self, res):
-        self.failUnlessEqual(len(self.cm.changes), 1)
-        c = self.cm.changes.pop()
+        c = self.cm.getChangeNumberedNow(3)
         self.failUnlessEqual(c.who, "alice")
         self.failUnlessEqual(c.files, ["foo.c"])
         self.failUnlessEqual(c.comments, "longer test change")
@@ -221,8 +221,7 @@ class Sender(unittest.TestCase):
         return d
 
     def _testSender_5(self, res):
-        self.failUnlessEqual(len(self.cm.changes), 1)
-        c = self.cm.changes.pop()
+        c = self.cm.getChangeNumberedNow(4)
         self.failUnlessEqual(c.who, "alice")
         self.failUnlessEqual(c.files, ["foo.c"])
         self.failUnlessEqual(c.comments, "")
@@ -237,8 +236,7 @@ class Sender(unittest.TestCase):
         return d
 
     def _testSender_6(self, res):
-        self.failUnlessEqual(len(self.cm.changes), 1)
-        c = self.cm.changes.pop()
+        c = self.cm.getChangeNumberedNow(5)
         self.failUnlessEqual(c.who, "alice")
         self.failUnlessEqual(c.files, ["foo.c"])
         self.failUnlessEqual(c.comments, "")

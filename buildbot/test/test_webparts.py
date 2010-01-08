@@ -11,12 +11,13 @@ from twisted.web import client
 from twisted.web.error import Error as WebError
 from buildbot import sourcestamp
 from buildbot.slave.commands import rmdirRecursive
+from buildbot.master import BuildMaster
 from buildbot.status import html, builder
 from buildbot.scripts import runner
 from buildbot.changes.changes import Change
 from buildbot.process import base
 from buildbot.process.buildstep import BuildStep
-from test_web import BaseWeb, base_config, ConfiguredMaster
+from test_web import BaseWeb, base_config
 
 
 class _WebpartsTest(BaseWeb, unittest.TestCase):
@@ -30,12 +31,19 @@ class _WebpartsTest(BaseWeb, unittest.TestCase):
         os.mkdir("test_webparts")
         runner.upgradeMaster({'basedir': "test_webparts",
                               'quiet': True,
+                              'db': None,
                               })
-        self.master = m = ConfiguredMaster("test_webparts", config)
+        basedir = "test_webparts"
+        self.master = m = BuildMaster(basedir)
+        m.readConfig = True
         m.startService()
-        # hack to find out what randomly-assigned port it is listening on
-        port = list(self.find_webstatus(m)[0])[0]._port.getHost().port
-        self.baseurl = "http://localhost:%d/" % port
+        d = m.loadConfig(config)
+        def _started(ign):
+            # hack to find out what randomly-assigned port it is listening on
+            port = list(self.find_webstatus(m)[0])[0]._port.getHost().port
+            self.baseurl = "http://localhost:%d/" % port
+        d.addCallback(_started)
+        return d
 
     def reconfigMaster(self, extraconfig):
         config = base_config + extraconfig
@@ -70,9 +78,10 @@ ws = html.WebStatus(http_port=0)
 c['status'] = [ws]
 ws.putChild('child.html', static.Data('I am the child', 'text/plain'))
 """
-        self.startMaster(extraconfig)
-        d = self.getAndCheck(self.baseurl + "child.html",
-                             "I am the child")
+        d = self.startMaster(extraconfig)
+        d.addCallback(lambda ign:
+                      self.getAndCheck(self.baseurl + "child.html",
+                                       "I am the child"))
         return d
     testInit.timeout = 10
 
@@ -83,16 +92,19 @@ ws = html.WebStatus(http_port=0)
 c['status'] = [ws]
 ws.putChild('child.html', static.Data('I am the child', 'text/plain'))
 """
-        self.startMaster(extraconfig)
-        os.mkdir(os.path.join("test_webparts", "public_html", "subdir"))
-        f = open(os.path.join("test_webparts", "public_html", "foo.html"), "wt")
-        f.write("see me foo\n")
-        f.close()
-        f = open(os.path.join("test_webparts", "public_html", "subdir",
-                              "bar.html"), "wt")
-        f.write("see me subdir/bar\n")
-        f.close()
-        d = self.getAndCheck(self.baseurl + "child.html", "I am the child")
+        d = self.startMaster(extraconfig)
+        def _started(ign):
+            os.mkdir(os.path.join("test_webparts", "public_html", "subdir"))
+            f = open(os.path.join("test_webparts", "public_html", "foo.html"), "wt")
+            f.write("see me foo\n")
+            f.close()
+            f = open(os.path.join("test_webparts", "public_html", "subdir",
+                                  "bar.html"), "wt")
+            f.write("see me subdir/bar\n")
+            f.close()
+            return self.getAndCheck(self.baseurl + "child.html",
+                                    "I am the child")
+        d.addCallback(_started)
         d.addCallback(lambda res:
                       self.getAndCheck(self.baseurl+"foo.html",
                                        "see me foo"))
@@ -110,8 +122,7 @@ ws.putChild('child.html', static.Data('I am the child', 'text/plain'))
 ws = html.WebStatus(http_port=0)
 c['status'] = [ws]
 """
-        self.startMaster(extraconfig)
-        d = defer.succeed(None)
+        d = self.startMaster(extraconfig)
         d.addCallback(self._do_page_tests)
         extraconfig2 = """
 ws = html.WebStatus(http_port=0, allowForce=True)

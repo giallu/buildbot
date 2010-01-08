@@ -7,9 +7,9 @@ from twisted.internet import defer, reactor
 from twisted.python import log, runtime, failure
 
 from buildbot.buildslave import AbstractLatentBuildSlave
-from buildbot.test.runutils import RunMixin
+from buildbot.test.runutils import RunMixin, run_one_build
+from buildbot.test.pollmixin import PollMixin
 from buildbot.sourcestamp import SourceStamp
-from buildbot.process.base import BuildRequest
 from buildbot.status.builder import SUCCESS
 from buildbot.status import mail
 from buildbot.slave import bot
@@ -57,16 +57,15 @@ class Slave(RunMixin, unittest.TestCase):
 
     def setUp(self):
         RunMixin.setUp(self)
-        self.master.loadConfig(config_1)
-        self.master.startService()
-        d = self.connectSlave(["b1"])
+        d = self.master.loadConfig(config_1)
+        d.addCallback(lambda ign: self.connectSlave(["b1"]))
         d.addCallback(lambda res: self.connectSlave(["b1"], "bot2"))
         return d
 
-    def doBuild(self, buildername):
-        br = BuildRequest("forced", SourceStamp(), 'test_builder')
-        d = br.waitUntilFinished()
-        self.control.getBuilder(buildername).requestBuild(br)
+    def doBuild(self, buildername, ss=None):
+        if ss is None:
+            ss = SourceStamp()
+        d = run_one_build(self.control, buildername, ss, "forced")
         return d
 
     def testSequence(self):
@@ -98,9 +97,10 @@ class Slave(RunMixin, unittest.TestCase):
 
 
     def testSimultaneous(self):
-        # make sure we can actually run two builds at the same time
-        d1 = self.doBuild("b1")
-        d2 = self.doBuild("b1")
+        # make sure we can actually run two builds at the same time. Set up
+        # the SourceStamps to keep them from being merged.
+        d1 = self.doBuild("b1", SourceStamp(branch="one"))
+        d2 = self.doBuild("b1", SourceStamp(branch="two"))
         d1.addCallback(self._testSimultaneous_1, d2)
         return d1
     def _testSimultaneous_1(self, res, d2):
@@ -169,13 +169,13 @@ class Slave(RunMixin, unittest.TestCase):
         # have two slaves connect for the same builder. Do something to the
         # first one so that slavepings are delayed (but do not fail
         # outright).
+        self.master.botmaster.builders["b1"].CHOOSE_SLAVES_RANDOMLY = False
         timers = []
         self.slaves['bot1'].debugOpts["stallPings"] = (10, timers)
-        br = BuildRequest("forced", SourceStamp(), 'test_builder')
-        d1 = br.waitUntilFinished()
-        self.master.botmaster.builders["b1"].CHOOSE_SLAVES_RANDOMLY = False
-        self.control.getBuilder("b1").requestBuild(br)
-        s1 = br.status # this is a BuildRequestStatus
+        bss = self.control.submitBuildSet(["b1"], SourceStamp(), "forced")
+        s1 = bss.getBuildRequests()[0]
+        d1 = bss.waitUntilFinished()
+
         # give it a chance to start pinging
         d2 = defer.Deferred()
         d2.addCallback(self._testDontClaimPingingSlave_1, d1, s1, timers)
@@ -197,8 +197,12 @@ class Slave(RunMixin, unittest.TestCase):
         timers[0].reset(0)
         d1.addCallback(self._testDontClaimPingingSlave_3)
         return d1
-    def _testDontClaimPingingSlave_3(self, res):
-        self.failUnlessEqual(res.getSlavename(), "bot1")
+    def _testDontClaimPingingSlave_3(self, build_set_status):
+        build_request_statuses = build_set_status.getBuildRequests()
+        build_request_status = build_request_statuses[0]
+        build_statuses = build_request_status.getBuilds()
+        build_status = build_statuses[0]
+        self.failUnlessEqual(build_status.getSlavename(), "bot1")
 
 class FakeLatentBuildSlave(AbstractLatentBuildSlave):
 
@@ -206,12 +210,17 @@ class FakeLatentBuildSlave(AbstractLatentBuildSlave):
     stop_wait = None
     start_message = None
     stopped = testing_substantiation_timeout = False
+    stall_startup_deferred = None
 
     def start_instance(self):
         # responsible for starting instance that will try to connect with
         # this master
         # simulate having to do some work.
         d = defer.Deferred()
+        if self.stall_startup_deferred:
+            d2 = self.stall_startup_deferred
+            d2.addCallback(lambda ign: self._start_instance(d))
+            return d
         if not self.testing_substantiation_timeout:
             reactor.callLater(0, self._start_instance, d)
         return d
@@ -246,9 +255,9 @@ class FakeLatentBuildSlave(AbstractLatentBuildSlave):
         else:
             def discard(data):
                 pass
-            bot = s.getServiceNamed("bot")
+            b = s.getServiceNamed("bot")
             for buildername in self.slavebuilders:
-                remote = bot.builders[buildername].remote
+                remote = b.builders[buildername].remote
                 if remote is None:
                     continue
                 broker = remote.broker
@@ -289,7 +298,7 @@ c['builders'] = [
 """
 
 
-class LatentSlave(RunMixin, unittest.TestCase):
+class LatentSlave(RunMixin, unittest.TestCase, PollMixin):
 
     def setUp(self):
         # debugging
@@ -297,19 +306,19 @@ class LatentSlave(RunMixin, unittest.TestCase):
         #twisted.internet.base.DelayedCall.debug = True
         # debugging
         RunMixin.setUp(self)
-        self.master.loadConfig(latent_config)
-        self.master.startService()
-        self.bot1 = self.master.botmaster.slaves['bot1']
-        self.bot2 = self.master.botmaster.slaves['bot2']
-        self.bot3 = self.master.botmaster.slaves['bot3']
-        self.bot1.testcase = self
-        self.bot2.testcase = self
-        self.b1 = self.master.botmaster.builders['b1']
+        d = self.master.loadConfig(latent_config)
+        def _started(ign):
+            self.bot1 = self.master.botmaster.slaves['bot1']
+            self.bot2 = self.master.botmaster.slaves['bot2']
+            self.bot3 = self.master.botmaster.slaves['bot3']
+            self.bot1.testcase = self
+            self.bot2.testcase = self
+            self.b1 = self.master.botmaster.builders['b1']
+        d.addCallback(_started)
+        return d
 
     def doBuild(self, buildername):
-        br = BuildRequest("forced", SourceStamp(), 'test_builder')
-        d = br.waitUntilFinished()
-        self.control.getBuilder(buildername).requestBuild(br)
+        d = run_one_build(self.control, buildername, SourceStamp(), "forced")
         return d
 
     def testSequence(self):
@@ -345,7 +354,17 @@ class LatentSlave(RunMixin, unittest.TestCase):
         # we move to a more sophisticated scheme.
         self.b1.CHOOSE_SLAVES_RANDOMLY = False
 
+        # we need to grab the slave during startup, and hold it there.
+        self.bot1.stall_startup_deferred = defer.Deferred()
         self.build_deferred = self.doBuild("b1")
+        # this takes a little while to check the database and claim the
+        # slave. Poll until it is ready.
+        def _check():
+            return self.bot1.substantiation_deferred
+        d = self.poll(_check)
+        d.addCallback(self._testSequence_1a)
+        return d
+    def _testSequence_1a(self, ign):
         # now there's an event waiting for the slave to substantiate.
         e = self.b1.builder_status.getEvent(-1)
         self.assertEqual(e.text, ['substantiating'])
@@ -355,9 +374,12 @@ class LatentSlave(RunMixin, unittest.TestCase):
         d = self.bot1.substantiation_deferred
         self.assertNotIdentical(d, None)
         d.addCallback(self._testSequence_2)
+        # now allow the FakeLatentBuildSlave to proceed
+        self.bot1.stall_startup_deferred.callback(None)
         return d
     def _testSequence_2(self, res):
         # bot 1 is substantiated.
+        self.bot1.stall_startup_deferred = None
         self.assertNotIdentical(self.bot1.slave, None)
         self.failUnless(self.bot1.substantiated)
         # the event has announced it's success
@@ -418,7 +440,17 @@ class LatentSlave(RunMixin, unittest.TestCase):
         self.failIf(self.bot1.substantiated)
         # Now we'll start up another build, to show that the shutdown left
         # things in such a state that we can restart.
-        d = self.doBuild("b1")
+
+        # again, we need to grab the slave during startup, and hold it there.
+        self.bot1.stall_startup_deferred = defer.Deferred()
+        self.build_deferred = self.doBuild("b1")
+
+        def _check():
+            return self.bot1.substantiation_deferred
+        d = self.poll(_check)
+        d.addCallback(self._testSequence_5a)
+        return d
+    def _testSequence_5a(self, ign):
         # the bot can return an informative message on success that the event
         # will render.  Let's use a mechanism of our test latent bot to
         # demonstrate that.
@@ -426,9 +458,14 @@ class LatentSlave(RunMixin, unittest.TestCase):
         # here's our event again:
         self.e = self.b1.builder_status.getEvent(-1)
         self.assertEqual(self.e.text, ['substantiating'])
+        # now allow the FakeLatentBuildSlave to proceed, and wait for the
+        # build to complete
+        d = self.build_deferred
         d.addCallback(self._testSequence_6)
+        self.bot1.stall_startup_deferred.callback(None)
         return d
     def _testSequence_6(self, res):
+        self.bot1.stall_startup_deferred = None
         # build was a success!
         self.failUnlessEqual(res.getResults(), SUCCESS)
         self.failUnlessEqual(res.getSlavename(), "bot1")
@@ -480,8 +517,21 @@ class LatentSlave(RunMixin, unittest.TestCase):
         # sequence should both use the first slave. This may change later if
         # we move to a more sophisticated scheme.
         self.b1.CHOOSE_SLAVES_RANDOMLY = False
+
         # start a build
         self.build_deferred = self.doBuild('b1')
+        def _check():
+            return self.bot1.substantiation_deferred
+        d = self.poll(_check)
+        d.addCallback(self._testNeverSubstantiated_starting)
+        return d
+
+    def stall(self, res, timeout):
+        d = defer.Deferred()
+        reactor.callLater(timeout, d.callback, res)
+        return d
+
+    def _testNeverSubstantiated_starting(self, ign):
         # the event tells us we are instantiating, as usual
         e = self.b1.builder_status.getEvent(-1)
         self.assertEqual(e.text, ['substantiating'])
@@ -494,6 +544,7 @@ class LatentSlave(RunMixin, unittest.TestCase):
         self.assertNotIdentical(d, None)
         d.addCallbacks(self._testNeverSubstantiated_BadSuccess,
                        self._testNeverSubstantiated_1)
+        d.addCallback(self.stall, 0.5)
         return d
     def _testNeverSubstantiated_BadSuccess(self, res):
         self.fail('we should not have succeeded here.')
@@ -570,19 +621,21 @@ class LatentSlave(RunMixin, unittest.TestCase):
         self.failIf(self.bot2.substantiated)
 
 
-class SlaveBusyness(RunMixin, unittest.TestCase):
+class SlaveBusyness(RunMixin, unittest.TestCase, PollMixin):
 
     def setUp(self):
         RunMixin.setUp(self)
-        self.master.loadConfig(config_busyness)
-        self.master.startService()
-        d = self.connectSlave(["b1", "b2"])
+        d = self.master.loadConfig(config_busyness)
+        d.addCallback(lambda ign: self.connectSlave(["b1", "b2"]))
+        return d
+
+    def stall(self, res, timeout):
+        d = defer.Deferred()
+        reactor.callLater(timeout, d.callback, res)
         return d
 
     def doBuild(self, buildername):
-        br = BuildRequest("forced", SourceStamp(), 'test_builder')
-        d = br.waitUntilFinished()
-        self.control.getBuilder(buildername).requestBuild(br)
+        d = run_one_build(self.control, buildername, SourceStamp(), "forced")
         return d
 
     def getRunningBuilds(self):
@@ -593,6 +646,7 @@ class SlaveBusyness(RunMixin, unittest.TestCase):
         # now kick a build, wait for it to finish, then check again
         d = self.doBuild("b1")
         d.addCallback(self._testSlaveNotBusy_1)
+        d.addCallback(self.stall, 1)
         return d
 
     def _testSlaveNotBusy_1(self, res):
@@ -604,7 +658,9 @@ class SlaveBusyness(RunMixin, unittest.TestCase):
         reactor.callLater(.5, d2.callback, None)
         d2.addCallback(self._testSlaveBusyOneBuild_1)
         d1.addCallback(self._testSlaveBusyOneBuild_finished_1)
-        return defer.DeferredList([d1,d2])
+        d = defer.DeferredList([d1,d2])
+        d.addCallback(self.stall, 1)
+        return d
 
     def _testSlaveBusyOneBuild_1(self, res):
         self.failUnlessEqual(self.getRunningBuilds(), 1)
@@ -619,7 +675,9 @@ class SlaveBusyness(RunMixin, unittest.TestCase):
         reactor.callLater(.5, d3.callback, None)
         d3.addCallback(self._testSlaveBusyTwoBuilds_1)
         d1.addCallback(self._testSlaveBusyTwoBuilds_finished_1, d2)
-        return defer.DeferredList([d1,d3])
+        d = defer.DeferredList([d1,d3])
+        d.addCallback(self.stall, 1)
+        return d
 
     def _testSlaveBusyTwoBuilds_1(self, res):
         self.failUnlessEqual(self.getRunningBuilds(), 2)
@@ -633,19 +691,21 @@ class SlaveBusyness(RunMixin, unittest.TestCase):
         self.failUnlessEqual(self.getRunningBuilds(), 0)
 
     def testSlaveDisconnect(self):
-        d1 = self.doBuild("b1")
-        d2 = defer.Deferred()
-        reactor.callLater(.5, d2.callback, None)
-        d2.addCallback(self._testSlaveDisconnect_1)
-        d1.addCallback(self._testSlaveDisconnect_finished_1)
-        return defer.DeferredList([d1, d2])
-
-    def _testSlaveDisconnect_1(self, res):
-        self.failUnlessEqual(self.getRunningBuilds(), 1)
-        return self.shutdownAllSlaves()
-
-    def _testSlaveDisconnect_finished_1(self, res):
-        self.failUnlessEqual(self.getRunningBuilds(), 0)
+        self.doBuild("b1") # the Deferred returned by this will never fire
+        d = defer.Deferred()
+        reactor.callLater(.5, d.callback, None)
+        def _check(ign):
+            self.failUnlessEqual(self.getRunningBuilds(), 1)
+            # the build doesn't actually get marked as done until slightly
+            # after shutdownAllSlaves()'s Deferred fires, so poll for it.
+            return self.shutdownAllSlaves()
+        d.addCallback(_check)
+        def _check2():
+            return self.getRunningBuilds() == 0
+        d.addCallback(lambda ign: self.poll(_check2))
+        # and we need another moment to clean up
+        d.addCallback(self.stall, 0.5)
+        return d
 
 config_3 = """
 from buildbot.process import factory
@@ -687,9 +747,8 @@ class Reconfig(RunMixin, unittest.TestCase):
 
     def setUp(self):
         RunMixin.setUp(self)
-        self.master.loadConfig(config_3)
-        self.master.startService()
-        d = self.connectSlave(["b1"])
+        d = self.master.loadConfig(config_3)
+        d.addCallback(lambda ign: self.connectSlave(["b1"]))
         return d
 
     def _one_started(self):
@@ -734,13 +793,16 @@ class Reconfig(RunMixin, unittest.TestCase):
         waitCommandRegistry[("three","build3")] = self._three_started
 
         # use different branches to make sure these cannot be merged
-        br1 = BuildRequest("build1", SourceStamp(branch="1"), 'test_builder')
-        b1.submitBuildRequest(br1)
-        br2 = BuildRequest("build2", SourceStamp(branch="2"), 'test_builder')
-        b1.submitBuildRequest(br2)
-        br3 = BuildRequest("build3", SourceStamp(branch="3"), 'test_builder')
-        b1.submitBuildRequest(br3)
-        self.requests = (br1, br2, br3)
+        bss1 = self.control.submitBuildSet(["b1"], SourceStamp(branch="1"),
+                                           "build1")
+        bss2 = self.control.submitBuildSet(["b1"], SourceStamp(branch="2"),
+                                           "build2")
+        bss3 = self.control.submitBuildSet(["b1"], SourceStamp(branch="3"),
+                                           "build3")
+        self.bsses = (bss1, bss2, bss3)
+        self.requests = (bss1.getBuildRequests()[0],
+                         bss2.getBuildRequests()[0],
+                         bss3.getBuildRequests()[0])
         # all three are now in the queue
 
         # wait until the first one has started
@@ -750,7 +812,7 @@ class Reconfig(RunMixin, unittest.TestCase):
     def _testReconfig_2(self, res):
         log.msg("_testReconfig_2")
         # confirm that it is building
-        brs = self.requests[0].status.getBuilds()
+        brs = self.requests[0].getBuilds()
         self.failUnlessEqual(len(brs), 1)
         self.build1 = brs[0]
         self.failUnlessEqual(self.build1.getCurrentStep().getName(), "wait")
@@ -769,15 +831,24 @@ class Reconfig(RunMixin, unittest.TestCase):
         self.failIfIdentical(b1, self.orig_b1)
         self.failIf(self.build1.isFinished())
         self.failUnlessEqual(self.build1.getCurrentStep().getName(), "wait")
-        self.failUnlessEqual(len(b1.buildable), 2)
-        self.failUnless(self.requests[1] in b1.buildable)
-        self.failUnless(self.requests[2] in b1.buildable)
+        buildable = b1.getBuildable()
+        self.failUnlessEqual(len(buildable), 2)
+        branches = [b.source.branch for b in buildable]
+        self.failUnlessEqual(sorted(branches), ["2", "3"])
 
         # allow br1 to finish, and make sure its status is delivered normally
-        d = self.requests[0].waitUntilFinished()
+        d = self.bsses[0].waitUntilFinished()
+        d.addCallback(self._get_bs)
         d.addCallback(self._testReconfig_4)
         self.d2.callback(None)
         return d
+
+    def _get_bs(self, build_set_status):
+        build_request_statuses = build_set_status.getBuildRequests()
+        build_request_status = build_request_statuses[0]
+        build_statuses = build_request_status.getBuilds()
+        build_status = build_statuses[0]
+        return build_status
 
     def _testReconfig_4(self, bs):
         log.msg("_testReconfig_4")
@@ -800,8 +871,9 @@ class Reconfig(RunMixin, unittest.TestCase):
         log.msg("_testReconfig_5")
         # at this point the next build ought to be running
         b1 = self.master.botmaster.builders['b1']
-        self.failUnlessEqual(len(b1.buildable), 1)
-        self.failUnless(self.requests[2] in b1.buildable)
+        buildable = b1.getBuildable()
+        self.failUnlessEqual(len(buildable), 1)
+        self.failUnlessEqual(buildable[0].source.branch, "3")
         self.failUnlessEqual(len(b1.building), 1)
         # and it ought to be using the new process
         self.failUnless(self.build2_started)
@@ -815,7 +887,7 @@ class Reconfig(RunMixin, unittest.TestCase):
         def _done(res):
             # then once that's done, allow the second build to finish and
             # wait for it to complete
-            da = self.requests[1].waitUntilFinished()
+            da = self.bsses[1].waitUntilFinished()
             self.d4.callback(None)
             return da
         d.addCallback(_done)
@@ -827,12 +899,22 @@ class Reconfig(RunMixin, unittest.TestCase):
             return db
         d.addCallback(_done2)
         d.addCallback(self._testReconfig_6)
+        # we need another moment to clean up
+        d.addCallback(self.stall, 0.5)
+        return d
+
+    def stall(self, result, delay=1):
+        d = defer.Deferred()
+        reactor.callLater(delay, d.callback, result)
         return d
 
     def _testReconfig_6(self, res):
         log.msg("_testReconfig_6")
         # now check to see that the third build is running
         self.failUnless(self.build3_started)
+        # let it finish
+        self.d6.callback(None)
+        return self.bsses[2].waitUntilFinished()
 
         # we're done
 
@@ -844,8 +926,8 @@ class Slave2(RunMixin, unittest.TestCase):
 
     def setUp(self):
         RunMixin.setUp(self)
-        self.master.loadConfig(config_1)
-        self.master.startService()
+        return self.master.loadConfig(config_1)
+
 
     def doBuild(self, buildername, reason="forced"):
         # we need to prevent these builds from being merged, so we create
@@ -853,10 +935,8 @@ class Slave2(RunMixin, unittest.TestCase):
         # ignored because our build process does not have a source checkout
         # step.
         self.revision += 1
-        br = BuildRequest(reason, SourceStamp(revision=self.revision),
-                                                            'test_builder')
-        d = br.waitUntilFinished()
-        self.control.getBuilder(buildername).requestBuild(br)
+        ss = SourceStamp(revision=self.revision)
+        d = run_one_build(self.control, buildername, ss, reason)
         return d
 
     def testFirstComeFirstServed(self):
@@ -926,10 +1006,8 @@ class FakeMailer(mail.MailNotifier):
 
 class BuildSlave(RunMixin, unittest.TestCase):
     def test_track_builders(self):
-        self.master.loadConfig(config_multi_builders)
-        self.master.readConfig = True
-        self.master.startService()
-        d = self.connectSlave()
+        d = self.master.loadConfig(config_multi_builders)
+        d.addCallback(lambda ign: self.connectSlave())
 
         def _check(res):
             b = self.master.botmaster.builders['dummy']
@@ -941,12 +1019,14 @@ class BuildSlave(RunMixin, unittest.TestCase):
                                   bs.slavebuilders.values()])
 
         d.addCallback(_check)
+        d.addCallback(self.stall, 0.5)
         return d
 
     def test_mail_on_missing(self):
-        self.master.loadConfig(config_mail_missing)
-        self.master.readConfig = True
-        self.master.startService()
+        d = self.master.loadConfig(config_mail_missing)
+        d.addCallback(self._test_mail_on_missing_1)
+        return d
+    def _test_mail_on_missing_1(self, ign):
         fm = FakeMailer("buildbot@example.org")
         fm.messages = []
         fm.setServiceParent(self.master)

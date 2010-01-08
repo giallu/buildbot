@@ -9,11 +9,13 @@ from twisted.trial import unittest
 
 from buildbot import interfaces
 from buildbot.sourcestamp import SourceStamp
-from buildbot.process.base import BuildRequest, Build
+from buildbot.process.base import Build
 from buildbot.status import builder, base, words
 from buildbot.status.web.base import createJinjaEnv
 from buildbot.changes.changes import Change
 from buildbot.process.builder import Builder
+from buildbot.test.runutils import run_one_build
+from buildbot.test.pollmixin import PollMixin
 from time import sleep
 
 import jinja2
@@ -967,6 +969,7 @@ class CompressLog(unittest.TestCase):
     # compression is not supported unless bz2 is installed
     try:
         import bz2 #@UnusedImport
+        del bz2 # hush pyflakes
     except:
         skip = "compression not supported (no bz2 module available)"
 
@@ -1090,7 +1093,7 @@ class STarget(base.StatusReceiver):
         self.events.append(("builderRemoved", name))
         self.announce()
 
-class Subscription(RunMixin, unittest.TestCase):
+class Subscription(RunMixin, unittest.TestCase, PollMixin):
     # verify that StatusTargets can subscribe/unsubscribe properly
 
     def testSlave(self):
@@ -1104,39 +1107,41 @@ class Subscription(RunMixin, unittest.TestCase):
         self.t3 = t3 = STarget(["builder", "build", "step"])
         s.subscribe(t3)
 
-        m.loadConfig(config_2)
-        m.readConfig = True
-        m.startService()
+        d = m.loadConfig(config_2)
+        def _started(ign):
+            self.failUnlessEqual(len(t1.events), 4)
+            self.failUnlessEqual(t1.events[0][0:2], ("builderAdded", "dummy"))
+            self.failUnlessEqual(t1.events[1],
+                                 ("builderChangedState", "dummy", "offline"))
+            self.failUnlessEqual(t1.events[2][0:2], ("builderAdded", "testdummy"))
+            self.failUnlessEqual(t1.events[3],
+                                 ("builderChangedState", "testdummy", "offline"))
+            t1.events = []
 
-        self.failUnlessEqual(len(t1.events), 4)
-        self.failUnlessEqual(t1.events[0][0:2], ("builderAdded", "dummy"))
-        self.failUnlessEqual(t1.events[1],
-                             ("builderChangedState", "dummy", "offline"))
-        self.failUnlessEqual(t1.events[2][0:2], ("builderAdded", "testdummy"))
-        self.failUnlessEqual(t1.events[3],
-                             ("builderChangedState", "testdummy", "offline"))
-        t1.events = []
+            self.failUnlessEqual(s.getBuilderNames(), ["dummy", "testdummy"])
+            self.failUnlessEqual(s.getBuilderNames(categories=['test']),
+                                 ["testdummy"])
+            self.s1 = s1 = s.getBuilder("dummy")
+            self.failUnlessEqual(s1.getName(), "dummy")
+            self.failUnlessEqual(s1.getState(), ("offline", []))
+            self.failUnlessEqual(s1.getCurrentBuilds(), [])
+            self.failUnlessEqual(s1.getLastFinishedBuild(), None)
+            self.failUnlessEqual(s1.getBuild(-1), None)
+            #self.failUnlessEqual(s1.getEvent(-1), foo("created"))
 
-        self.failUnlessEqual(s.getBuilderNames(), ["dummy", "testdummy"])
-        self.failUnlessEqual(s.getBuilderNames(categories=['test']),
-                             ["testdummy"])
-        self.s1 = s1 = s.getBuilder("dummy")
-        self.failUnlessEqual(s1.getName(), "dummy")
-        self.failUnlessEqual(s1.getState(), ("offline", []))
-        self.failUnlessEqual(s1.getCurrentBuilds(), [])
-        self.failUnlessEqual(s1.getLastFinishedBuild(), None)
-        self.failUnlessEqual(s1.getBuild(-1), None)
-        #self.failUnlessEqual(s1.getEvent(-1), foo("created"))
-
-        # status targets should, upon being subscribed, immediately get a
-        # list of all current builders matching their category
-        self.t2 = t2 = STarget([])
-        s.subscribe(t2)
-        self.failUnlessEqual(len(t2.events), 2)
-        self.failUnlessEqual(t2.events[0][0:2], ("builderAdded", "dummy"))
-        self.failUnlessEqual(t2.events[1][0:2], ("builderAdded", "testdummy"))
-
-        d = self.connectSlave(builders=["dummy", "testdummy"])
+            # status targets should, upon being subscribed, immediately get a
+            # list of all current builders matching their category
+            self.t2 = t2 = STarget([])
+            s.subscribe(t2)
+            self.failUnlessEqual(len(t2.events), 2)
+            self.failUnlessEqual(t2.events[0][0:2], ("builderAdded", "dummy"))
+            self.failUnlessEqual(t2.events[1][0:2], ("builderAdded", "testdummy"))
+        d.addCallback(_started)
+        d.addCallback(lambda ign:
+                      self.connectSlave(builders=["dummy", "testdummy"]))
+        def _wait():
+            return len(t1.events) == 2
+        d.addCallback(lambda ign: self.poll(_wait))
         d.addCallback(self._testSlave_1, t1)
         return d
 
@@ -1149,9 +1154,7 @@ class Subscription(RunMixin, unittest.TestCase):
         t1.events = []
 
         c = interfaces.IControl(self.master)
-        req = BuildRequest("forced build for testing", SourceStamp(), 'test_builder')
-        c.getBuilder("dummy").requestBuild(req)
-        d = req.waitUntilFinished()
+        d = run_one_build(c, "dummy", SourceStamp(), "forced build for testing")
         d2 = self.master.botmaster.waitUntilBuilderIdle("dummy")
         dl = defer.DeferredList([d, d2])
         dl.addCallback(self._testSlave_2)
@@ -1236,9 +1239,7 @@ class Subscription(RunMixin, unittest.TestCase):
         self.t4 = t4 = STarget(["builder", "build", "eta"])
         self.master.getStatus().subscribe(t4)
         c = interfaces.IControl(self.master)
-        req = BuildRequest("forced build for testing", SourceStamp(), 'test_builder')
-        c.getBuilder("dummy").requestBuild(req)
-        d = req.waitUntilFinished()
+        d = run_one_build(c, "dummy", SourceStamp(), "forced build for testing")
         d2 = self.master.botmaster.waitUntilBuilderIdle("dummy")
         dl = defer.DeferredList([d, d2])
         dl.addCallback(self._testSlave_3)

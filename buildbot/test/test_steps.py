@@ -22,12 +22,14 @@ from twisted.internet import reactor, defer
 
 from buildbot.sourcestamp import SourceStamp
 from buildbot.process import buildstep, base, factory
-from buildbot.process.properties import WithProperties
+from buildbot.buildrequest import BuildRequest
+from buildbot.process.properties import Properties, WithProperties
 from buildbot.buildslave import BuildSlave
-from buildbot.steps import shell, source, python, master
+from buildbot.steps import shell, source, python
+from buildbot.steps.master import MasterShellCommand
 from buildbot.status import builder
 from buildbot.status.builder import SUCCESS, WARNINGS, FAILURE, SKIPPED
-from buildbot.test.runutils import RunMixin, rmtree
+from buildbot.test.runutils import RunMixin, rmtree, run_one_build
 from buildbot.test.runutils import makeBuildStep, StepTester
 from buildbot.slave import commands, registry
 
@@ -77,7 +79,8 @@ class BuildStep(unittest.TestCase):
         self.builder_status.nextBuildNumber = 0
         os.mkdir(self.builder_status.basedir)
         self.build_status = self.builder_status.newBuild()
-        req = base.BuildRequest("reason", SourceStamp(), 'test_builder')
+        req = BuildRequest("reason", SourceStamp(), 'test_builder',
+                           Properties())
         self.build = base.Build([req])
         self.build.build_status = self.build_status # fake it
         self.build.builder = self.builder
@@ -201,7 +204,8 @@ class Steps(unittest.TestCase):
             (shell.Test, {'command': "make testharder"}),
             ]
         f = factory.ConfigurableBuildFactory(steps)
-        req = base.BuildRequest("reason", SourceStamp(), 'test_builder')
+        req = BuildRequest("reason", SourceStamp(), 'test_builder',
+                           Properties())
         b = f.newBuild([req])
         #for s in b.steps: print s.name
 
@@ -366,17 +370,13 @@ c['slavePortnum'] = 0
 class SlaveVersion(RunMixin, unittest.TestCase):
     def setUp(self):
         RunMixin.setUp(self)
-        self.master.loadConfig(version_config)
-        self.master.startService()
-        d = self.connectSlave(["quick"])
+        d = self.master.loadConfig(version_config)
+        d.addCallback(lambda ign: self.connectSlave(["quick"]))
         return d
 
     def doBuild(self, buildername):
-        br = base.BuildRequest("forced", SourceStamp(), 'test_builder')
-        d = br.waitUntilFinished()
-        self.control.getBuilder(buildername).requestBuild(br)
+        d = run_one_build(self.control, buildername, SourceStamp(), "forced")
         return d
-
 
     def checkCompare(self, s):
         cver = commands.command_version
@@ -859,13 +859,14 @@ Result: FAIL
         self.failUnlessEqual(ss.getStatistic('tests-total'), 264809)
         self.failUnlessEqual(ss.getStatistic('tests-passed'), 264522)
 
-class MasterShellCommand(StepTester, unittest.TestCase):
+class MasterCommand(StepTester, unittest.TestCase):
     def testMasterShellCommand(self):
         self.slavebase = "testMasterShellCommand.slave"
         self.masterbase = "testMasterShellCommand.master"
         sb = self.makeSlaveBuilder()
-        step = self.makeStep(master.MasterShellCommand, command=['echo',
-                                   WithProperties("hi build-%(other)s.tar.gz")])
+        step = self.makeStep(MasterShellCommand,
+                             command=['echo',
+                                      WithProperties("hi build-%(other)s.tar.gz")])
         step.build.setProperty("other", "foo", "test")
 
         # we can't invoke runStep until the reactor is started .. hence this
@@ -887,7 +888,7 @@ class MasterShellCommand(StepTester, unittest.TestCase):
         self.slavebase = "testMasterShellCommand_badexit.slave"
         self.masterbase = "testMasterShellCommand_badexit.master"
         sb = self.makeSlaveBuilder()
-        step = self.makeStep(master.MasterShellCommand, command="exit 1")
+        step = self.makeStep(MasterShellCommand, command="exit 1")
 
         # we can't invoke runStep until the reactor is started .. hence this
         # little dance
