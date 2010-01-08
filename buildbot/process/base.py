@@ -8,7 +8,7 @@ from twisted.python.failure import Failure
 from twisted.internet import reactor, defer, error
 
 from buildbot import interfaces, locks
-from buildbot.status.builder import SUCCESS, WARNINGS, FAILURE, EXCEPTION
+from buildbot.status.builder import SUCCESS, WARNINGS, FAILURE, EXCEPTION, RETRY
 from buildbot.status.builder import Results
 from buildbot.status.progress import BuildProgress
 
@@ -391,6 +391,9 @@ class Build:
                 self.result = FAILURE
         elif result == EXCEPTION:
             self.result = EXCEPTION
+            terminate = True
+        elif result == RETRY:
+            self.result = RETRY
             terminate = True
         return terminate
 

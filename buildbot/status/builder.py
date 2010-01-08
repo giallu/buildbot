@@ -27,8 +27,8 @@ except ImportError:
 # sibling imports
 from buildbot import interfaces, util, sourcestamp
 
-SUCCESS, WARNINGS, FAILURE, SKIPPED, EXCEPTION = range(5)
-Results = ["success", "warnings", "failure", "skipped", "exception"]
+SUCCESS, WARNINGS, FAILURE, SKIPPED, EXCEPTION, RETRY = range(6)
+Results = ["success", "warnings", "failure", "skipped", "exception", "retry"]
 
 
 # build processes call the following methods:

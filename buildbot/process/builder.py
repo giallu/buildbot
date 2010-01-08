@@ -9,6 +9,7 @@ from twisted.internet import reactor, defer
 
 from buildbot import interfaces, util
 from buildbot.status.progress import Expectations
+from buildbot.status.builder import RETRY
 from buildbot.process import base
 from buildbot.process.properties import Properties
 from buildbot.eventual import eventually
@@ -867,8 +868,11 @@ class Builder(pb.Referenceable, service.MultiService):
 
         results = build.build_status.getResults()
         self.building.remove(build)
-        brids = [br.id for br in build.requests]
-        self.db.retire_buildrequests(brids, results)
+        if results == RETRY:
+            self._resubmit_buildreqs(build).addErrback(log.err) # returns Deferred
+        else:
+            brids = [br.id for br in build.requests]
+            self.db.retire_buildrequests(brids, results)
         self.triggerNewBuildCheck()
 
     def _resubmit_buildreqs(self, build):

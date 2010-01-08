@@ -6,7 +6,7 @@ from zope.interface import Interface
 from twisted.web import resource, static
 from twisted.python import log
 from buildbot.status import builder
-from buildbot.status.builder import SUCCESS, WARNINGS, FAILURE, SKIPPED, EXCEPTION
+from buildbot.status.builder import SUCCESS, WARNINGS, FAILURE, SKIPPED, EXCEPTION, RETRY
 from buildbot import version, util
 from buildbot.process.properties import Properties
 
@@ -38,6 +38,7 @@ css_classes = {SUCCESS: "success",
                FAILURE: "failure",
                SKIPPED: "skipped",
                EXCEPTION: "exception",
+               RETRY: "retry",
                None: "",
                }
 
