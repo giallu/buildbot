@@ -42,27 +42,6 @@ from twisted.application import service
 
 from buildbot import interfaces, util
 
-class Queue:
-    def __init__(self):
-        self.queue = []
-        self.busy = False
-    def add(self, call, *args, **kwargs):
-        self.queue.append( (call, args, kwargs) )
-        if not self.busy:
-            self.busy = True
-            self.pop()
-    def pop(self):
-        call,args,kwargs = self.queue.pop(0)
-        d = defer.maybeDeferred(call, *args, **kwargs)
-        d.addBoth(self.call_done)
-        d.addErrback(log.err)
-    def call_done(self, res):
-        if not self.queue:
-            self.busy = False
-            return
-        self.pop()
-        return res
-
 class ChangeManager(service.MultiService):
 
     """This is the master-side service which receives file change
