@@ -35,7 +35,7 @@
 #
 # ***** END LICENSE BLOCK *****
 
-import sys, time, collections
+import sys, time, collections, base64
 import simplejson
 from twisted.python import log, reflect, threadable
 from twisted.internet import defer, reactor
@@ -145,7 +145,7 @@ TABLES = [
     (
     `id` INTEGER PRIMARY KEY,
     `patchlevel` INTEGER NOT NULL,
-    `patch` TEXT NOT NULL,
+    `patch_base64` TEXT NOT NULL, -- encoded bytestring
     `subdir` TEXT -- usually NULL
     );""",
     """CREATE TABLE sourcestamp_changes
@@ -742,16 +742,17 @@ class DBConnector(util.ComparableMixin):
 
         patch = None
         if patchid is not None:
-            t.execute(self.quoteq("SELECT patchlevel,patch,subdir"
+            t.execute(self.quoteq("SELECT patchlevel,patch_base64,subdir"
                                   " FROM patches WHERE id=?"),
                       (patchid,))
             r = t.fetchall()
             assert len(r) == 1
-            (patch_level, patch_text_u, subdir_u) = r[0]
+            (patch_level, patch_text_base64, subdir_u) = r[0]
+            patch_text = base64.b64decode(patch_text_base64)
             if subdir_u:
-                patch = (patch_level, str(patch_text_u), str(subdir_u))
+                patch = (patch_level, patch_text, str(subdir_u))
             else:
-                patch = (patch_level, str(patch_text_u))
+                patch = (patch_level, patch_text)
 
         t.execute(self.quoteq("SELECT changeid FROM sourcestamp_changes"
                               " WHERE sourcestampid=?"
@@ -847,9 +848,9 @@ class DBConnector(util.ComparableMixin):
             t.execute("SELECT id FROM patches ORDER BY id DESC LIMIT 1")
             patchid = _one_or_else(t.fetchall(), 0) + 1
             q = self.quoteq("INSERT INTO patches"
-                            " (id, patchlevel, patch, subdir)"
+                            " (id, patchlevel, patch_base64, subdir)"
                             " VALUES (?,?,?,?)")
-            t.execute(q, (patchid, patchlevel, diff, subdir))
+            t.execute(q, (patchid, patchlevel, base64.b64encode(diff), subdir))
         t.execute("SELECT id FROM sourcestamps ORDER BY id DESC LIMIT 1")
         ss.ssid = _one_or_else(t.fetchall(), 0) + 1
         t.execute(self.quoteq("INSERT INTO sourcestamps"

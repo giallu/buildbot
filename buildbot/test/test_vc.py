@@ -80,6 +80,7 @@ c['logCompressionLimit'] = False
 BuildmasterConfig = c
 """
 
+# patches are 8-bit bytestrings
 p0_diff = r"""
 Index: subdir/subdir.c
 ===================================================================
