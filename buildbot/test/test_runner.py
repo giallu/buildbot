@@ -7,6 +7,7 @@ import os, shutil, shlex
 import sets
 
 from buildbot.scripts import runner, tryclient
+from buildbot.db import DBAlreadyExistsError
 
 class Options(unittest.TestCase):
     optionsFile = "SDFsfsFSdfsfsFSD"
@@ -102,7 +103,7 @@ class Create(unittest.TestCase):
         tacfile = open(tac,"rt").read()
         self.failUnlessIn("basedir", tacfile)
         self.failUnlessIn("configfile = r'master.cfg'", tacfile)
-        self.failUnlessIn("BuildMaster(basedir, configfile)", tacfile)
+        self.failUnlessIn("BuildMaster(basedir, configfile, db)", tacfile)
 
         cfg = os.path.join(basedir, "master.cfg")
         self.failIfExists(cfg)
@@ -115,48 +116,10 @@ class Create(unittest.TestCase):
         self.failUnlessExists(makefile)
 
         # now verify that running it a second time (with the same options)
-        # does the right thing: nothing changes
-        runner.createMaster(options)
-        os.chdir(cwd)
+        # does the right thing: it refuses to touch the existing database
 
-        self.failIfExists(os.path.join(basedir, "buildbot.tac.new"))
-        self.failUnlessExists(os.path.join(basedir, "master.cfg.sample"))
-
-        oldtac = open(os.path.join(basedir, "buildbot.tac"), "rt").read()
-
-        # mutate Makefile.sample, since it should be rewritten
-        f = open(os.path.join(basedir, "Makefile.sample"), "rt")
-        oldmake = f.read()
-        f = open(os.path.join(basedir, "Makefile.sample"), "wt")
-        f.write(oldmake)
-        f.write("# additional line added\n")
-        f.close()
-
-        # also mutate master.cfg.sample
-        f = open(os.path.join(basedir, "master.cfg.sample"), "rt")
-        oldsamplecfg = f.read()
-        f = open(os.path.join(basedir, "master.cfg.sample"), "wt")
-        f.write(oldsamplecfg)
-        f.write("# additional line added\n")
-        f.close()
-
-        # now run it again (with different options)
-        options = runner.MasterOptions()
-        options.parseOptions(["-q", "--config", "other.cfg", basedir])
-        runner.createMaster(options)
-        os.chdir(cwd)
-
-        tac = open(os.path.join(basedir, "buildbot.tac"), "rt").read()
-        self.failUnlessEqual(tac, oldtac, "shouldn't change existing .tac")
-        self.failUnlessExists(os.path.join(basedir, "buildbot.tac.new"))
-
-        make = open(os.path.join(basedir, "Makefile.sample"), "rt").read()
-        self.failUnlessEqual(make, oldmake, "*should* rewrite Makefile.sample")
-
-        samplecfg = open(os.path.join(basedir, "master.cfg.sample"),
-                         "rt").read()
-        self.failUnlessEqual(samplecfg, oldsamplecfg,
-                             "*should* rewrite master.cfg.sample")
+        self.failUnlessRaises(DBAlreadyExistsError,
+                              runner.createMaster, options)
 
     def testUpgradeMaster(self):
         # first, create a master, run it briefly, then upgrade it. Nothing
