@@ -38,7 +38,7 @@
 import os
 from twisted.trial import unittest
 from twisted.python import failure
-from twisted.internet import defer
+from twisted.internet import defer, reactor
 from twisted.application import service
 from buildbot import db, master
 from buildbot.schedulers.manager import SchedulerManager
@@ -285,6 +285,11 @@ class Scheduling(unittest.TestCase):
         d.addCallback(_check4)
         return d
 
+    def stall(self, res, timeout):
+        d = defer.Deferred()
+        reactor.callLater(timeout, d.callback, res)
+        return d
+
     def test_immediate(self):
         m, cm, sm = self.build_harness("db/scheduler/immediate")
         def fileIsImportant(c):
@@ -292,7 +297,9 @@ class Scheduling(unittest.TestCase):
                 if not fn.endswith(".txt"):
                     return True
             return False
-        s = Scheduler("one", branch=None, treeStableTimer=None,
+        # we set the treeStableTimer to something tiny, since "None" has a
+        # special meaning ("do not merge Changes")
+        s = Scheduler("one", branch=None, treeStableTimer=0.01,
                       builderNames=["builder-one"],
                       fileIsImportant=fileIsImportant)
         d = sm.updateSchedulers([s])
@@ -319,11 +326,14 @@ class Scheduling(unittest.TestCase):
         d.addCallback(_sleep_forever_not_build)
 
         # now add a second change which evaluates as "important", which
-        # should trigger a build with both changes.
+        # should trigger a build with both changes after the treeStableTimer
+        # has passed, which should be quickly
         c2 = Change(who="brian", files=["foo.c", "subdir/bar.c"],
                     comments="second change",
                     revision="1235")
         d.addCallback(lambda ign: cm.addChange(c2))
+        # stall here to let the treeStableTimer expire
+        d.addCallback(self.stall, 1.0)
         d.addCallback(lambda ign: s.run())
         def _build_not_sleep(res):
             # a BuildRequest should be pushed, and the Scheduler should go
@@ -405,7 +415,7 @@ class Scheduling(unittest.TestCase):
 
     def test_many_changes(self):
         m, cm, sm = self.build_harness("db/scheduler/many_changes")
-        s = Scheduler("one", branch=None, treeStableTimer=None,
+        s = Scheduler("one", branch=None, treeStableTimer=0.01,
                       builderNames=["builder-one"])
         d = sm.updateSchedulers([s])
 
@@ -417,6 +427,7 @@ class Scheduling(unittest.TestCase):
                        comments="change %d" % i,
                        revision="%d" % (i+10))
             d.addCallback(lambda ign, c=c: cm.addChange(c))
+        d.addCallback(self.stall, 1.0)
         d.addCallback(lambda ign: s.run())
         def _build_not_sleep(res):
             # a BuildRequest should be pushed, and the Scheduler should go
