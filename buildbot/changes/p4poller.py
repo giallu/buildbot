@@ -13,6 +13,10 @@ from twisted.internet.task import LoopingCall
 from buildbot import util
 from buildbot.changes import base, changes
 
+class P4PollerError(Exception):
+    """Something went wrong with the poll. This is used as a distinctive
+    exception type so that unit tests can detect and ignore it."""
+
 def get_simple_split(branchfile):
     """Splits the branchfile argument and assuming branch is 
        the first path component in branchfile, will return
@@ -107,10 +111,11 @@ class P4Source(base.ChangeSource, util.ComparableMixin):
         assert self.working
         self.working = False
 
-        # Again, the return value is only for unit testing.
-        # If there's a failure, log it so it isn't lost.
+        # Again, the return value is only for unit testing. If there's a
+        # failure, log it so it isn't lost. Use log.err to make sure unit
+        # tests flunk if there was a problem.
         if isinstance(res, failure.Failure):
-            log.msg('P4 poll failed: %s' % res)
+            log.err(res, "P4 poll failed")
             return None
         return res
 
@@ -137,7 +142,8 @@ class P4Source(base.ChangeSource, util.ComparableMixin):
             line = line.strip()
             if not line: continue
             m = self.changes_line_re.match(line)
-            assert m, "Unexpected 'p4 changes' output: %r" % result
+            if not m:
+                raise P4PollerError("Unexpected 'p4 changes' output: %r" % result)
             num = int(m.group('num'))
             if last_change is None:
                 log.msg('P4Poller: starting at change %d' % num)
@@ -172,7 +178,8 @@ class P4Source(base.ChangeSource, util.ComparableMixin):
         # field. The rstrip() is intended to remove that.
         lines[0] = lines[0].rstrip()
         m = self.describe_header_re.match(lines[0])
-        assert m, "Unexpected 'p4 describe -s' result: %r" % result
+        if not m:
+            raise P4PollerError("Unexpected 'p4 describe -s' result: %r" % result)
         who = m.group('who')
         when = time.mktime(time.strptime(m.group('when'), self.datefmt))
         comments = ''
@@ -185,7 +192,8 @@ class P4Source(base.ChangeSource, util.ComparableMixin):
             line = lines.pop(0).strip()
             if not line: continue
             m = self.file_re.match(line)
-            assert m, "Invalid file line: %r" % line
+            if not m:
+                raise P4PollerError("Invalid file line: %r" % line)
             path = m.group('path')
             if path.startswith(self.p4base):
                 branch, file = self.split_file(path[len(self.p4base):])
@@ -199,7 +207,7 @@ class P4Source(base.ChangeSource, util.ComparableMixin):
             c = changes.Change(who=who,
                                files=branch_files[branch],
                                comments=comments,
-                               revision=num,
+                               revision=str(num),
                                when=when,
                                branch=branch)
             self.parent.addChange(c)

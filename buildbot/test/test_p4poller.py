@@ -4,7 +4,7 @@ from twisted.internet import defer
 from twisted.trial import unittest
 
 from buildbot.changes.changes import Change
-from buildbot.changes.p4poller import P4Source, get_simple_split
+from buildbot.changes.p4poller import P4Source, get_simple_split, P4PollerError
 
 first_p4changes = \
 """Change 1 on 2006/04/13 by slamb@testclient 'first rev'
@@ -103,14 +103,18 @@ class TestP4Poller(unittest.TestCase):
         # The first time, it just learns the change to start at.
         self.assert_(self.t.last_change is None)
         self.assert_(not self.t.working)
-        return self.t.checkp4().addCallback(self._testCheck2)
+        d = self.t.checkp4()
+        d.addCallback(self._testCheck2)
+        return d
 
     def _testCheck2(self, res):
         self.assertEquals(self.changes, [])
         self.assertEquals(self.t.last_change, 1)
 
         # Subsequent times, it returns Change objects for new changes.
-        return self.t.checkp4().addCallback(self._testCheck3)
+        d = self.t.checkp4()
+        d.addCallback(self._testCheck3)
+        return d
 
     def _testCheck3(self, res):
         self.assertEquals(len(self.changes), 3)
@@ -164,6 +168,7 @@ class TestP4Poller(unittest.TestCase):
     def _testFailedChanges2(self, f):
         self.failUnlessEqual(f, None)
         self.assert_(not self.t.working)
+        self.flushLoggedErrors(P4PollerError)
 
     def testFailedDescribe(self):
         """'p4 describe' failure is properly ignored"""
@@ -178,12 +183,15 @@ class TestP4Poller(unittest.TestCase):
 
     def _testFailedDescribe2(self, res):
         # first time finds nothing; check again.
-        return self.t.checkp4().addCallback(self._testFailedDescribe3)
+        d = self.t.checkp4()
+        d.addCallback(self._testFailedDescribe3)
+        return d
 
     def _testFailedDescribe3(self, f):
         self.failUnlessEqual(f, None)
         self.assert_(not self.t.working)
         self.assertEquals(self.t.last_change, 2)
+        self.flushLoggedErrors(P4PollerError)
 
     def testAlreadyWorking(self):
         """don't launch a new poll while old is still going"""
@@ -192,6 +200,7 @@ class TestP4Poller(unittest.TestCase):
         self.assert_(self.t.last_change is None)
         d = self.t.checkp4()
         d.addCallback(self._testAlreadyWorking2)
+        return d
 
     def _testAlreadyWorking2(self, res):
         self.assert_(self.t.last_change is None)
@@ -207,6 +216,7 @@ class TestP4Poller(unittest.TestCase):
         self.t.last_change = 50
         d = self.t.checkp4()
         d.addCallback(self._testSplitFile)
+        return d
 
     def _testSplitFile(self, res):
         self.assertEquals(len(self.changes), 2)
