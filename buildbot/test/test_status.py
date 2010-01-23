@@ -341,8 +341,8 @@ class Mail(unittest.TestCase):
         b1.setText(["snarkleack", "polarization", "failed"])
         b1.blamelist = ["dev3", "dev3", "dev3", "dev4",
                         "Thomas_Walters"]
-        b1.source.changes = (Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 123),
-                             Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = 456))
+        b1.source.changes = (Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "123"),
+                             Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = "456"))
         b1.testlogs = [MyLog(basedir, 'compile', "Compile log here\n"),
                        MyLog(basedir, 'test', "Test log here\nTest 1 failed\nTest 2 failed\nTest 3 failed\nTest 4 failed\n")]
 
@@ -377,8 +377,8 @@ class Mail(unittest.TestCase):
         b1.setText(["snarkleack", "polarization", "failed"])
         b1.blamelist = ["dev3", "dev3", "dev3", "dev4",
                         "Thomas_Walters"]
-        b1.source.changes = (Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 123),
-                             Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = 456))
+        b1.source.changes = (Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "123"),
+                             Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = "456"))
         b1.testlogs = [MyLog(basedir, 'compile', "Compile log here\n"),
                        MyLog(basedir, 'test', "Test log here\nTest 1 failed\nTest 2 failed\nTest 3 failed\nTest 4 failed\n")]
 
@@ -411,8 +411,8 @@ class Mail(unittest.TestCase):
         b1.setText(["snarkleack", "polarization", "failed"])
         b1.blamelist = ["dev3", "dev3", "dev3", "dev4",
                         "Thomas_Walters"]
-        b1.source.changes = (Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 123),
-                             Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = 456))
+        b1.source.changes = (Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "123"),
+                             Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = "456"))
         b1.testlogs = [MyLog(basedir, 'compile', "Compile log here\n"),
                        MyLog(basedir, 'test', "Test log here\nTest 1 failed\nTest 2 failed\nTest 3 failed\nTest 4 failed\n")]
         b1.source.patch = (0, '--- /dev/null\n+++ a_file\n', None)
@@ -1314,15 +1314,15 @@ class ContactTester(unittest.TestCase):
         my_builder = MyBuilder("builder78")
         my_build = MyIrcBuild(my_builder, 23, builder.SUCCESS)
         my_build.changes = (
-            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 123),
-            Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = 456),
+            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "123"),
+            Change(who = 'author2', files = ['file2'], comments = 'comment2', revision = "456"),
             )
 
         irc.command_NOTIFY("on started", "mynick")
 
         irc.message = ""
         irc.buildStarted(my_builder.getName(), my_build)
-        self.failUnlessEqual(irc.message, "build #23 of builder78 started including [123, 456]", "Start notification generated with notify_events=['started']")
+        self.failUnlessEqual(irc.message, "build #23 of builder78 started, including [123, 456]", "Start notification generated with notify_events=['started']")
 
         irc.message = ""
         irc.buildFinished(my_builder.getName(), my_build, None)
@@ -1334,7 +1334,7 @@ class ContactTester(unittest.TestCase):
         my_builder = MyBuilder("builder834")
         my_build = MyIrcBuild(my_builder, 862, builder.SUCCESS)
         my_build.changes = (
-            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 943),
+            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "943"),
             )
 
         irc.command_NOTIFY("on finished", "mynick")
@@ -1353,7 +1353,7 @@ class ContactTester(unittest.TestCase):
         my_builder = MyBuilder("builder834")
         my_build = MyIrcBuild(my_builder, 862, builder.SUCCESS)
         my_build.changes = (
-            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 943),
+            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "943"),
             )
 
         irc.command_NOTIFY("on success", "mynick")
@@ -1382,7 +1382,7 @@ class ContactTester(unittest.TestCase):
         my_builder = MyBuilder("builder834")
         my_build = MyIrcBuild(my_builder, 862, builder.FAILURE)
         my_build.changes = (
-            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 943),
+            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "943"),
             )
 
         irc.command_NOTIFY("on failure", "mynick")
@@ -1413,7 +1413,7 @@ class ContactTester(unittest.TestCase):
         my_builder = MyBuilder("builder834")
         my_build = MyIrcBuild(my_builder, 862, builder.EXCEPTION)
         my_build.changes = (
-            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 943),
+            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "943"),
             )
 
         irc.command_NOTIFY("on exception", "mynick")
@@ -1449,7 +1449,7 @@ class ContactTester(unittest.TestCase):
         my_builder = MyBuilder("builder834")
         my_build = MyIrcBuild(my_builder, 862, builder.FAILURE)
         my_build.changes = (
-            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 943),
+            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "943"),
             )
 
         previous_build = MyIrcBuild(my_builder, 861, previous_result)
@@ -1633,7 +1633,7 @@ class ContactTester(unittest.TestCase):
         my_builder = MyBuilder("builder834")
         my_build = MyIrcBuild(my_builder, 862, builder.SUCCESS)
         my_build.changes = (
-            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = 943),
+            Change(who = 'author1', files = ['file1'], comments = 'comment1', revision = "943"),
             )
 
         irc.message = ""

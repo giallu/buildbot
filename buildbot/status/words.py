@@ -300,11 +300,11 @@ class Contact:
             log.msg('Not notifying for a build when started-notification disabled')
             return
 
-        r = "build #%d of %s started" % \
+        r = "build #%d of %s started, including [%s]" % \
            (build.getNumber(),
-             builder.getName())
-
-        r += " including [" + ", ".join(map(lambda c: repr(c.revision), build.getChanges())) + "]"
+            builder.getName(),
+            ", ".join([str(c.revision) for c in build.getChanges()])
+            )
 
         self.send(r)
 
