@@ -211,10 +211,10 @@ class Sender(unittest.TestCase):
         self.failUnlessEqual(c.revision, "r123")
         self.failUnlessEqual(c.category, "categoryA")
 
-        # make sure that numeric revisions work too
+        # make sure that numeric revisions work too. They are now treated
+        # just like strings.
         self.options['logfile'] = None
-        del self.options['revision']
-        self.options['revision_number'] = 42
+        self.options['revision'] = "42"
 
         d = runner.sendchange(self.options)
         d.addCallback(self._testSender_5)
@@ -225,7 +225,7 @@ class Sender(unittest.TestCase):
         self.failUnlessEqual(c.who, "alice")
         self.failUnlessEqual(c.files, ["foo.c"])
         self.failUnlessEqual(c.comments, "")
-        self.failUnlessEqual(c.revision, 42)
+        self.failUnlessEqual(c.revision, "42")
         self.failUnlessEqual(c.category, "categoryA")
 
         # verify --branch too
@@ -240,6 +240,6 @@ class Sender(unittest.TestCase):
         self.failUnlessEqual(c.who, "alice")
         self.failUnlessEqual(c.files, ["foo.c"])
         self.failUnlessEqual(c.comments, "")
-        self.failUnlessEqual(c.revision, 42)
+        self.failUnlessEqual(c.revision, "42")
         self.failUnlessEqual(c.branch, "branches/test")
         self.failUnlessEqual(c.category, "categoryA")

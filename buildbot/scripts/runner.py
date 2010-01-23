@@ -841,8 +841,7 @@ class SendChangeOptions(OptionsWithOptionsFile):
         ("username", "u", None, "Username performing the commit"),
         ("branch", "b", None, "Branch specifier"),
         ("category", "c", None, "Category of repository"),
-        ("revision", "r", None, "Revision specifier (string)"),
-        ("revision_number", "n", None, "Revision specifier (integer)"),
+        ("revision", "r", None, "Revision specifier"),
         ("revision_file", None, None, "Filename containing revision spec"),
         ("property", "p", None,
          "A property for the change, in the format: name:value"),
@@ -883,9 +882,6 @@ def sendchange(config, runReactor=False):
         when = float(config.get('when'))
     else:
         when = None
-    # SVN and P4 use numeric revisions
-    if config.get("revision_number"):
-        revision = int(config['revision_number'])
     if config.get("revision_file"):
         revision = open(config["revision_file"],"r").read()
 
