@@ -239,9 +239,6 @@ class HtmlResource(resource.Resource, ContextMixin):
             return False
         return request.site.buildbot_service.authUser(user, passwd)
 
-    def getChangemaster(self, request):
-        return request.site.buildbot_service.getChangeSvc()
-
 
 class StaticHTML(HtmlResource):
     def __init__(self, body, title):

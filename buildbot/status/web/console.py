@@ -77,8 +77,6 @@ class ConsoleStatusResource(HtmlResource):
 
         self.status = None
         self.control = None
-        self.changemaster = None
-        self.initialRevs = None
 
         self.allowForce = allowForce
         self.css = css
@@ -96,7 +94,7 @@ class ConsoleStatusResource(HtmlResource):
         else:
             return "BuildBot"
 
-    def getChangemaster(self, request):
+    def getChangeManager(self, request):
         return request.site.buildbot_service.parent.change_svc
 
     ##
@@ -146,44 +144,32 @@ class ConsoleStatusResource(HtmlResource):
 
         debugInfo["source_fetch_len"] = len(allChanges)
         return allChanges                
-        
+
     def getAllChanges(self, source, status, debugInfo):
         """Return all the changes we can find at this time. If |source| does not
         not have enough (less than 25), we try to fetch more from the builders
         history."""
 
-        allChanges = list()
-        allChanges.extend(source.changes[:])
+        g = source.eventGenerator()
+        allChanges = []
+        while len(allChanges) < 25:
+            try:
+                c = g.next()
+            except StopIteration:
+                break
+            allChanges.append(c)
 
-        debugInfo["source_len"] = len(source.changes)
+        allChanges.sort(key=self.comparator.getSortingKey())
 
-        if len(allChanges) < 25:
-            # There is not enough revisions in the source.changes. It happens
-            # quite a lot because buildbot mysteriously forget about changes
-            # once in a while during restart.
-            # Let's try to get more changes from the builders.
-            # We check the last 10 builds of all builders, and stop when we
-            # are done, or have looked at 100 builds.
-            # We do this only once!
-            if not self.initialRevs:
-                self.initialRevs = self.fetchChangesFromHistory(status, 10, 100,
-                                                                debugInfo)
-
-            allChanges.extend(self.initialRevs)
-
-            # the new changes are not sorted, and can contain duplicates.
-            # Sort the list.
-            allChanges.sort(key=self.comparator.getSortingKey())
-
-            # Remove the dups
-            prevChange = None
-            newChanges = []
-            for change in allChanges:
-                rev = change.revision
-                if not prevChange or rev != prevChange.revision:
-                    newChanges.append(change)
-                prevChange = change
-            allChanges = newChanges
+        # Remove the dups
+        prevChange = None
+        newChanges = []
+        for change in allChanges:
+            rev = change.revision
+            if not prevChange or rev != prevChange.revision:
+                newChanges.append(change)
+            prevChange = change
+        allChanges = newChanges
 
         return allChanges
 
@@ -640,7 +626,7 @@ class ConsoleStatusResource(HtmlResource):
         status = self.getStatus(request)
 
         # Get all revisions we can find.
-        source = self.getChangemaster(request)
+        source = self.getChangeManager(request)
         allChanges = self.getAllChanges(source, status, debugInfo)
 
         debugInfo["source_all"] = len(allChanges)
