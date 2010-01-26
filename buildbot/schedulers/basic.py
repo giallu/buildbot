@@ -41,14 +41,14 @@ from twisted.application import service
 
 from buildbot import interfaces
 from buildbot.process.properties import Properties
-from buildbot.util import defaultdict
+from buildbot.util import defaultdict, ComparableMixin
 from buildbot.sourcestamp import SourceStamp
 from buildbot.status.builder import SUCCESS, WARNINGS
 
 class _None:
     pass
 
-class _Base(service.MultiService):
+class _Base(service.MultiService, ComparableMixin):
     implements(interfaces.IScheduler)
     # subclasses must set .compare_attrs
 
@@ -213,7 +213,6 @@ class Scheduler(_Base, ClassifierMixin):
         least a double wakeup.
         """
 
-        db = self.parent.db
         if not important:
             return None
         all_changes = important + unimportant

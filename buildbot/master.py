@@ -505,13 +505,14 @@ class BuildMaster(service.MultiService):
             return
 
         try:
-            self.loadConfig(f)
+            d = self.loadConfig(f)
         except:
             log.msg("error during loadConfig")
             log.err()
             log.msg("The new config file is unusable, so I'll ignore it.")
             log.msg("I will keep using the previous config file instead.")
         f.close()
+        return d # for unit tests
 
     def loadConfig(self, f):
         """Internal function to load a specific configuration file. Any
@@ -594,7 +595,7 @@ class BuildMaster(service.MultiService):
             if changeHorizon is not None and not isinstance(changeHorizon, int):
                 raise ValueError("changeHorizon needs to be an int")
 
-        except KeyError, e:
+        except KeyError:
             log.msg("config dictionary is missing a required parameter")
             log.msg("leaving old configuration in place")
             raise

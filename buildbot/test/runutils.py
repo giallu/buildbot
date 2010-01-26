@@ -547,6 +547,11 @@ class ShouldFailMixin:
         d.addBoth(done)
         return d
 
+class StallMixin:
+    def stall(self, res, timeout):
+        d = defer.Deferred()
+        reactor.callLater(timeout, d.callback, res)
+        return d
 
 def run_one_build(c, builderName, ss, reason):
     # this used to be:
