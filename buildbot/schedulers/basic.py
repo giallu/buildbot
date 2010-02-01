@@ -333,12 +333,14 @@ class Dependent(_Base):
     def _run(self, t):
         db = self.parent.db
         res = db.scheduler_get_subscribed_buildsets(self.schedulerid, t)
-        # this returns bsid,ssid,results for all of our completed active
-        # subscriptions
-        for (bsid,ssid,results) in res:
-            if results in (SUCCESS, WARNINGS):
-                self.create_buildset(ssid, "downstream", t)
-            db.scheduler_unsubscribe_buildset(self.schedulerid, bsid, t)
+        # this returns bsid,ssid,results for all of our active subscriptions.
+        # We ignore the ones that aren't complete yet. This leaves the
+        # subscription in place until the buildset is complete.
+        for (bsid,ssid,complete,results) in res:
+            if complete:
+                if results in (SUCCESS, WARNINGS):
+                    self.create_buildset(ssid, "downstream", t)
+                db.scheduler_unsubscribe_buildset(self.schedulerid, bsid, t)
         return None
 
 # Dependent/Triggerable schedulers will make a BuildSet with linked

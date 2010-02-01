@@ -921,20 +921,22 @@ class DBConnector(util.ComparableMixin):
                   (schedulerid,) + tuple(changeids))
 
     def scheduler_subscribe_to_buildset(self, schedulerid, bsid, t):
+        # scheduler_get_subscribed_buildsets(schedulerid) will return
+        # information about all buildsets that were subscribed this way
         t.execute(self.quoteq("INSERT INTO scheduler_upstream_buildsets"
                               " (buildsetid, schedulerid, active)"
                               " VALUES (?,?,?)"),
                   (bsid, schedulerid, 1))
 
     def scheduler_get_subscribed_buildsets(self, schedulerid, t):
-        # returns list of (bsid, ssid, results) pairs
-        t.execute(self.quoteq("SELECT bs.id, bs.sourcestampid, bs.results"
+        # returns list of (bsid, ssid, complete, results) pairs
+        t.execute(self.quoteq("SELECT bs.id, "
+                              "  bs.sourcestampid, bs.complete, bs.results"
                               " FROM scheduler_upstream_buildsets AS s,"
                               "  buildsets AS bs"
                               " WHERE s.buildsetid=bs.id"
                               "  AND s.schedulerid=?"
-                              "  AND s.active=1"
-                              "  AND bs.complete=1"),
+                              "  AND s.active=1"),
                   (schedulerid,))
         return t.fetchall()
 
@@ -1094,23 +1096,19 @@ class DBConnector(util.ComparableMixin):
         t.execute(q, (bsid,))
         results = t.fetchall()
         is_complete = True
+        bs_results = SUCCESS
         for (complete, r) in results:
             if not complete:
                 # still waiting
                 is_complete = False
-            elif r not in (SUCCESS, WARNINGS):
-                # give up
-                q = self.quoteq("UPDATE buildsets"
-                                " SET complete=1, complete_at=?, results=?"
-                                " WHERE id=?")
-                t.execute(q, (now, FAILURE, bsid))
-                return
+            if r == FAILURE:
+                bs_results = r
         if is_complete:
             # they were all successful
             q = self.quoteq("UPDATE buildsets"
                             " SET complete=1, complete_at=?, results=?"
                             " WHERE id=?")
-            t.execute(q, (now, SUCCESS, bsid))
+            t.execute(q, (now, bs_results, bsid))
 
     def get_buildrequestids_for_buildset(self, bsid):
         return self.runInteractionNow(self._txn_get_buildrequestids_for_buildset,
@@ -1145,6 +1143,27 @@ class DBConnector(util.ComparableMixin):
         if finished and successful is None:
             successful = True
         return (successful, finished)
+
+    def get_active_buildset_ids(self):
+        return self.runInteractionNow(self._txn_get_active_buildset_ids)
+    def _txn_get_active_buildset_ids(self, t):
+        t.execute("SELECT id FROM buildsets WHERE complete=0")
+        return [bsid for (bsid,) in t.fetchall()]
+    def get_buildset_info(self, bsid):
+        return self.runInteractionNow(self._txn_get_buildset_info, bsid)
+    def _txn_get_buildset_info(self, t, bsid):
+        q = self.quoteq("SELECT external_idstring, reason, sourcestampid,"
+                        "       complete, results"
+                        " FROM buildsets WHERE id=?")
+        t.execute(q, (bsid,))
+        res = t.fetchall()
+        if res:
+            (external, reason, ssid, complete, results) = res[0]
+            external_idstring = str_or_none(external)
+            reason = str_or_none(reason)
+            complete = bool(complete)
+            return (external_idstring, reason, ssid, complete, results)
+        return None # shouldn't happen
 
     # general-purpose key-value (JSON) store, for use by e.g. ChangeSources
 

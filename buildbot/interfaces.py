@@ -270,7 +270,9 @@ class IBuildSetStatus(Interface):
         """Return a Deferred that fires (with this IBuildSetStatus object)
         when all builds have finished."""
     def getResults():
-        pass
+        """Return SUCCESS/FAILURE, or None if the buildset is not finished
+        yet"""
+
 
 class IBuildRequestStatus(Interface):
     """I represent a request to build a particular set of source code on a

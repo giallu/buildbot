@@ -2427,7 +2427,7 @@ class Status:
             return
         successful,finished = self.db.examine_buildset(bsid)
         bss = BuildSetStatus(bsid, self, self.db)
-        if successful:
+        if successful is not None:
             for d in self._buildset_success_waiters.pop(bsid):
                 eventually(d.callback, bss)
         if finished:

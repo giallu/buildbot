@@ -97,11 +97,11 @@ class Triggerable(_Base):
     def _run(self, t):
         db = self.parent.db
         res = db.scheduler_get_subscribed_buildsets(self.schedulerid, t)
-        # this returns bsid,ssid,results for all of our completed active
-        # subscriptions
-        for (bsid,ssid,results) in res:
-            d = self._waiters.pop(bsid, None)
-            if d:
-                reactor.callFromThread(d.callback, results)
-            db.scheduler_unsubscribe_buildset(self.schedulerid, bsid, t)
+        # this returns bsid,ssid,results for all of our active subscriptions
+        for (bsid,ssid,complete,results) in res:
+            if complete:
+                d = self._waiters.pop(bsid, None)
+                if d:
+                    reactor.callFromThread(d.callback, results)
+                db.scheduler_unsubscribe_buildset(self.schedulerid, bsid, t)
         return None

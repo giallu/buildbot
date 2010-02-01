@@ -68,16 +68,16 @@ def rmtree(d):
         if e.errno != errno.ENOENT:
             raise
 
-class RunMixin:
+
+class MasterMixin:
     master = None
-
-    def rmtree(self, d):
-        rmtree(d)
-
-    def setUp(self):
+    basedir = None
+    def create_master(self):
         self.slaves = {}
-        basedir = self.basedir = self.mktemp()
-        os.mkdir(basedir)
+        if self.basedir is None:
+            self.basedir = self.mktemp()
+        basedir = self.basedir
+        os.makedirs(basedir)
         spec = db.DB("sqlite3", os.path.join(basedir, "state.sqlite"))
         db.create_db(spec)
         self.master = master.BuildMaster(basedir, db=spec)
@@ -85,6 +85,21 @@ class RunMixin:
         self.master.startService()
         self.status = self.master.getStatus()
         self.control = interfaces.IControl(self.master)
+
+    def rmtree(self, d):
+        rmtree(d)
+
+    def tearDown(self):
+        log.msg("doing tearDown")
+        #d.addCallback(flushEventualQueue)
+        if not self.master:
+            return
+        d = self.shutdownAllSlaves()
+        d.addCallback(flushEventualQueue)
+        d.addCallback(lambda ign: self.master.stopService())
+        d.addCallback(flushEventualQueue)
+        d.addCallback(lambda ign: log.msg("tearDown done"))
+        return d
 
     def connectOneSlave(self, slavename, opts={}):
         port = self.master.slavePort._port.getHost().port
@@ -168,16 +183,6 @@ class RunMixin:
                 log.msg("--- STOP ---")
         log.msg("logBuildResults finished")
 
-    def tearDown(self):
-        log.msg("doing tearDown")
-        d = self.shutdownAllSlaves()
-        d.addCallback(flushEventualQueue)
-        if self.master:
-            d.addCallback(lambda ign: self.master.stopService())
-        d.addCallback(flushEventualQueue)
-        d.addCallback(lambda ign: log.msg("tearDown done"))
-        return d
-
     # various forms of slave death
 
     def shutdownAllSlaves(self):
@@ -250,6 +255,10 @@ class RunMixin:
         # reconnect. The master doesn't yet realize it has lost the previous
         # connection, and sees two connections at once.
         raise NotImplementedError
+
+class RunMixin(MasterMixin):
+    def setUp(self):
+        self.create_master()
 
 
 class FakeDB:
