@@ -155,12 +155,10 @@ class MasterMixin:
         return d
 
     # things to start builds
-    def requestBuild(self, builder):
+    def requestBuild(self, buildername):
         # returns a Deferred that fires with an IBuildStatus object when the
         # build is finished
-        req = BuildRequest("forced build", SourceStamp(), 'test_builder')
-        self.control.getBuilder(builder).requestBuild(req)
-        return req.waitUntilFinished()
+        return run_one_build(self.control, buildername, SourceStamp(), "reason")
 
     def failUnlessBuildSucceeded(self, bs):
         if bs.getResults() != builder.SUCCESS:
