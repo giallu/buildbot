@@ -73,6 +73,8 @@ class MasterMixin:
     master = None
     basedir = None
     def create_master(self):
+        assert not self.master, "you called create_master twice"
+        # probably because you subclassed RunMixin instead of MasterMixin
         self.slaves = {}
         if self.basedir is None:
             self.basedir = self.mktemp()
