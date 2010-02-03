@@ -779,11 +779,14 @@ class DBConnector(util.ComparableMixin):
     def _txn_get_properties_from_db(self, t, tablename, idname, id):
         # apparently you can't use argument placeholders for table names. Don't
         # call this with a weird-looking tablename.
-        q = self.quoteq("SELECT property_name,property_value FROM %s WHERE ?=?"
-                        % tablename)
-        t.execute(q, (idname, id))
-        props = dict(t.fetchall())
-        return Properties(**props)
+        q = self.quoteq("SELECT property_name,property_value FROM %s WHERE %s=?"
+                        % (tablename, idname))
+        t.execute(q, (id,))
+        retval = Properties()
+        for key, valuepair in t.fetchall():
+            value, source = simplejson.loads(valuepair)
+            retval.setProperty(str(key), value, source)
+        return retval
 
     # Scheduler manipulation methods
 
