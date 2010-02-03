@@ -27,3 +27,6 @@ docs/images/status.png
 .project
 .pydevproject
 .settings
+twisted/plugins/dropin.cache
+.coverage
+coverage-html
