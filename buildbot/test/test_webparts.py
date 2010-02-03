@@ -3,39 +3,34 @@
 
 import os
 import re
-import time
 
 from twisted.trial import unittest
 from twisted.internet import defer
 from twisted.web import client
 from twisted.web.error import Error as WebError
 from buildbot import sourcestamp
-from buildbot.slave.commands import rmdirRecursive
-from buildbot.master import BuildMaster
-from buildbot.status import html, builder
 from buildbot.scripts import runner
+from buildbot.status import builder
+from buildbot.status.html import WebStatus
 from buildbot.changes.changes import Change
 from buildbot.process import base
 from buildbot.process.buildstep import BuildStep
-from test_web import BaseWeb, base_config
+from test_web import BaseWeb, base_config, SimpleMaster
+from buildbot.buildrequest import BuildRequest
 
 
-class _WebpartsTest(BaseWeb, unittest.TestCase):
+class _WebpartsTest(BaseWeb):
     def find_webstatus(self, master):
-        return filter(lambda child: isinstance(child, html.WebStatus),
+        return filter(lambda child: isinstance(child, WebStatus),
                       list(master))
 
     def startMaster(self, extraconfig):
         config = base_config + extraconfig
-        rmdirRecursive("test_webparts")
-        os.mkdir("test_webparts")
-        runner.upgradeMaster({'basedir': "test_webparts",
-                              'quiet': True,
-                              'db': None,
-                              })
-        basedir = "test_webparts"
-        self.master = m = BuildMaster(basedir)
-        m.readConfig = True
+        os.makedirs(self.basedir)
+        self.master = m = SimpleMaster(self.basedir)
+        # use upgradeMaster to populate public_html/ with default.css
+        runner.upgradeMaster({'basedir': self.basedir, 'quiet': True,
+                              'db': None})
         m.startService()
         d = m.loadConfig(config)
         def _started(ign):
@@ -70,8 +65,9 @@ class _WebpartsTest(BaseWeb, unittest.TestCase):
                           "Couldn't find substring '%s' in page:\n%s" %
                           (substring, page))
 
-class Webparts(_WebpartsTest):
+class Webparts(_WebpartsTest, unittest.TestCase):
     def testInit(self):
+        self.basedir = "webparts/Webparts/init"
         extraconfig = """
 from twisted.web import static
 ws = html.WebStatus(http_port=0)
@@ -86,6 +82,7 @@ ws.putChild('child.html', static.Data('I am the child', 'text/plain'))
     testInit.timeout = 10
 
     def testStatic(self):
+        self.basedir = "webparts/Webparts/static"
         extraconfig = """
 from twisted.web import static
 ws = html.WebStatus(http_port=0)
@@ -94,11 +91,11 @@ ws.putChild('child.html', static.Data('I am the child', 'text/plain'))
 """
         d = self.startMaster(extraconfig)
         def _started(ign):
-            os.mkdir(os.path.join("test_webparts", "public_html", "subdir"))
-            f = open(os.path.join("test_webparts", "public_html", "foo.html"), "wt")
+            os.mkdir(os.path.join(self.basedir, "public_html", "subdir"))
+            f = open(os.path.join(self.basedir, "public_html", "foo.html"), "wt")
             f.write("see me foo\n")
             f.close()
-            f = open(os.path.join("test_webparts", "public_html", "subdir",
+            f = open(os.path.join(self.basedir, "public_html", "subdir",
                                   "bar.html"), "wt")
             f.write("see me subdir/bar\n")
             f.close()
@@ -118,6 +115,7 @@ ws.putChild('child.html', static.Data('I am the child', 'text/plain'))
         return d
 
     def testPages(self):
+        self.basedir = "webparts/Webparts/pages"
         extraconfig = """
 ws = html.WebStatus(http_port=0)
 c['status'] = [ws]
@@ -164,66 +162,49 @@ c['status'] = [ws]
         return d
 
 
-class WebpartsRecursive(_WebpartsTest):
-    '''A rather big test that attempts to fill the buildbot
-       state with as much info as possible, then walk all
-       reachable pages from the root url and make sure
-       they all are accessible w/o errors and that they
-       validate according to the given doctype
+etree = None
+try:
+    from lxml import etree
+except ImportError:
+    pass
 
-       This test  accesses the network the first time around.
-       (This can be avoided if we include the cached dtd:s in
-        the repo.)
+log_WebpartsRecursive = False # Set to True to list pages being checked
 
-       Lxml (http://codespeak.net/lxml/) is used to parse
-       and validate all, so this test is skipped if lxml
-       is not installed.
+
+class CustomResolver(etree.Resolver):
+    '''Cache DTDs to avoid w3.org blocking
+
+       from http://www.hoboes.com/Mimsy/hacks/caching-dtds-using-lxml-and-etree/
     '''
 
-    log = False # Set to True to list pages being checked
+    import tempfile
+    cache = '%s/buildbot-test-dtd-cache' % tempfile.gettempdir()
 
-    def setUp(self):
-        try:
-            from lxml import etree
-        except ImportError:
-            raise unittest.SkipTest("lxml not installed")
+    if log_WebpartsRecursive:
+        print "\nCaching DTDs in: %s" % cache
 
-        class CustomResolver(etree.Resolver):
-            '''Cache DTDs to avoid w3.org blocking
+    def resolve(self, URL, id, context):
+        import urllib
+        import urlparse
 
-               from http://www.hoboes.com/Mimsy/hacks/caching-dtds-using-lxml-and-etree/
-            '''
+        #determine cache path
+        url = urlparse.urlparse(URL)
+        filefolder, filename = os.path.split(url.path)
+        filefolder = url.hostname + filefolder
+        dtdFolder = os.path.join(self.cache, filefolder)
+        dtdPath = os.path.join(dtdFolder, filename)
 
-            import tempfile
-            cache = '%s/buildbot-test-dtd-cache' % tempfile.gettempdir()
+        #cache if necessary
+        if not os.path.exists(dtdPath):
+            print "CREATING CACHE FOR", URL
+            if not os.path.exists(dtdFolder):
+                os.makedirs(dtdFolder)
+            filename, headers = urllib.urlretrieve(URL, dtdPath)
 
-            if WebpartsRecursive.log:
-                print "\nCaching DTDs in: %s" % cache
+        #resolve the cached file
+        return self.resolve_file(open(dtdPath), context, base_url=URL)
 
-            def resolve(self, URL, id, context):
-                import urllib
-                import urlparse
-
-                #determine cache path
-                url = urlparse.urlparse(URL)
-                filefolder, filename = os.path.split(url.path)
-                filefolder = url.hostname + filefolder
-                dtdFolder = os.path.join(self.cache, filefolder)
-                dtdPath = os.path.join(dtdFolder, filename)
-
-                #cache if necessary
-                if not os.path.exists(dtdPath):
-                    print "CREATING CACHE FOR", URL
-                    if not os.path.exists(dtdFolder):
-                        os.makedirs(dtdFolder)
-                    filename, headers = urllib.urlretrieve(URL, dtdPath)
-
-                #resolve the cached file
-                return self.resolve_file(open(dtdPath), context, base_url=URL)
-
-        self.CustomResolver = CustomResolver
-
-        extraconfig = """
+recursive_extraconfig = """
 from buildbot.status import html
 from buildbot.changes import mail
 from buildbot.process import factory
@@ -259,15 +240,40 @@ c['builders'] = [
 c['buildbotURL'] = 'http://dummy.example.org:8010/'
 
 """
-        self.startMaster(extraconfig)
 
+class WebpartsRecursive(_WebpartsTest, unittest.TestCase):
+    '''A rather big test that attempts to fill the buildbot
+       state with as much info as possible, then walk all
+       reachable pages from the root url and make sure
+       they all are accessible w/o errors and that they
+       validate according to the given doctype
+
+       This test  accesses the network the first time around.
+       (This can be avoided if we include the cached dtd:s in
+        the repo.)
+
+       Lxml (http://codespeak.net/lxml/) is used to parse
+       and validate all, so this test is skipped if lxml
+       is not installed.
+    '''
+
+    def setUp(self):
+        if not etree:
+            raise unittest.SkipTest("lxml not installed")
+
+        self.basedir = "webparts/WebpartsRecursive/AllPagesValidate"
+        d = self.startMaster(recursive_extraconfig)
+        d.addCallback(lambda ign: self.create_status())
+        return d
+
+    def create_status(self):
         for i in range(5):
             c = Change("user", ["foo.c"] * i, "see ticket #%i" % i,
                        revision=str(42+i), when=0.1*i)
             self.master.change_svc.addChange(c)
 
         ss = sourcestamp.SourceStamp(revision=42)
-        req = base.BuildRequest("reason", ss, 'test_builder')
+        req = BuildRequest("reason", ss, 'test_builder')
         build1 = base.Build([req])
         bs = self.master.status.getBuilder("builder1").newBuild()
         bs.setReason("reason")
@@ -296,6 +302,7 @@ c['buildbotURL'] = 'http://dummy.example.org:8010/'
                 <head><title>Teh Log</title></head>
                 <body>Aaaiight</body>
             </html>''')
+        del log2
 
         log3 = step1.addLog("big")
         log3.addStdout("somewhat big log\n")
@@ -322,7 +329,7 @@ c['buildbotURL'] = 'http://dummy.example.org:8010/'
         from lxml import html
 
         self.parser = html.XHTMLParser(dtd_validation=True, no_network=False)
-        self.parser.resolvers.add(self.CustomResolver())
+        self.parser.resolvers.add(CustomResolver())
         self.errors = []
         self.error_count = 0
         self.visited_urls = [self.baseurl]
@@ -339,7 +346,7 @@ c['buildbotURL'] = 'http://dummy.example.org:8010/'
                 (self.error_count, len(self.visited_urls),
                  u"\n  ".join(self.errors))
             self.fail(fail_summary)
-        elif self.log:
+        elif log_WebpartsRecursive:
             print "%i urls ok" % len(self.visited_urls)
 
 
@@ -379,7 +386,7 @@ c['buildbotURL'] = 'http://dummy.example.org:8010/'
         try:
             # parse & validate xhtml
             xhtml = html.fromstring(page, url, self.parser)
-        except etree.XMLSyntaxError as e:
+        except etree.XMLSyntaxError, e:
             self.error_count += 1
             self.errors.append("***** %s: %s *****" %
                                (url.replace(self.baseurl, '/'), e.msg))
@@ -421,7 +428,7 @@ c['buildbotURL'] = 'http://dummy.example.org:8010/'
             if not link.startswith(self.baseurl):
                 if link not in self.skipped_urls:
                     self.skipped_urls.append(link)
-                    if self.log:
+                    if log_WebpartsRecursive:
                         print "Skipping: %s" % link
                 continue
 
@@ -437,11 +444,11 @@ c['buildbotURL'] = 'http://dummy.example.org:8010/'
             # FIXME: text logs aren't html, check content-type in getPage
             unvalidatable = ['/text']
             if tag == 'a' and not any (map(lambda e: link.endswith(e), unvalidatable)):
-                if self.log:
+                if log_WebpartsRecursive:
                     print "Validating: %s" % link
                 pages.append(link)
             else:
-                if self.log:
+                if log_WebpartsRecursive:
                     print "Checking: %s" % link
                 links.append(link)
 
