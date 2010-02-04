@@ -1,5 +1,4 @@
 # -*- test-case-name: buildbot.test.test_vc -*-
-# -*- coding: utf-8 -*-
 
 import sys, os, time, re
 from email.Utils import mktime_tz, parsedate_tz
@@ -56,7 +55,7 @@ from twisted.internet.defer import waitForDeferred, deferredGenerator
 # use a predetermined Internet-domain port number, unless we want to go
 # all-out: bind the listen socket ourselves and pretend to be inetd.
 
-BUILDERNAME = u"vç"
+BUILDERNAME = u"v\N{LATIN SMALL LETTER C WITH CEDILLA}"
 
 config_vc = """
 from buildbot.process import factory
@@ -72,7 +71,8 @@ c = {}
 c['slaves'] = [BuildSlave('bot1', 'sekrit')]
 c['schedulers'] = []
 c['builders'] = [
-    BuilderConfig(name=u'v\u00e7', slavename='bot1', factory=f1, builddir='vc-dir'),
+    BuilderConfig(name=u'v\N{LATIN SMALL LETTER C WITH CEDILLA}',
+                  slavename='bot1', factory=f1, builddir='vc-dir'),
 ]
 c['slavePortnum'] = 0
 # do not compress logs in tests
@@ -81,7 +81,7 @@ BuildmasterConfig = c
 """
 
 # patches are 8-bit bytestrings
-p0_diff = r"""
+p0_diff = ur'''
 Index: subdir/subdir.c
 ===================================================================
 RCS file: /home/warner/stuff/Projects/BuildBot/code-arch/_trial_temp/test_vc/repositories/CVS-Repository/sample/subdir/subdir.c,v
@@ -94,10 +94,11 @@ diff -u -r1.1.1.1 subdir.c
  main(int argc, const char *argv[])
  {
 -    printf("Hello subdir.\n");
-+    printf("HellÒ patched subdir.\n");
++    printf("%s patched subdir.\n");
      return 0;
  }
-"""
+''' % u"Hell\N{LATIN CAPITAL LETTER O WITH GRAVE}"
+p0_diff = p0_diff.encode("utf-8")
 
 # Test buildbot try --root support.
 subdir_diff = p0_diff.replace('subdir/subdir.c', 'subdir.c')
@@ -110,16 +111,17 @@ PATCHLEVEL0, SUBDIR_ROOT, PATCHLEVEL2 = range(3)
 
 # this patch does not include the filename headers, so it is
 # patchlevel-neutral
-TRY_PATCH = '''
+TRY_PATCH = ur'''
 @@ -5,6 +5,6 @@
  int
  main(int argc, const char *argv[])
  {
 -    printf("Hello subdir.\\n");
-+    printf("HÉllo try.\\n");
++    printf("%s try.\\n");
      return 0;
  }
-'''
+''' % u"H\N{LATIN CAPITAL LETTER E WITH ACUTE}llo"
+TRY_PATCH = TRY_PATCH.encode("utf-8")
 
 MAIN_C = '''
 // this is main.c
@@ -781,7 +783,8 @@ class VCBase(SignalMixin):
         subdir_c = os.path.join(self.slavebase, "vc-dir", "build",
                                 "subdir", "subdir.c")
         data = open(subdir_c, "r").read()
-        self.failUnlessIn("HellÒ patched subdir.\\n", data)
+        expected = u"Hell\N{LATIN CAPITAL LETTER O WITH GRAVE} patched subdir.\\n".encode("utf-8")
+        self.failUnlessIn(expected, data)
         self.failUnlessEqual(bs.getProperty("revision"),
                              self.helper.trunk[-1] or None)
         self.checkGotRevision(bs, self.helper.trunk[-1])
@@ -820,7 +823,8 @@ class VCBase(SignalMixin):
         subdir_c = os.path.join(self.slavebase, "vc-dir", "build",
                                 "subdir", "subdir.c")
         data = open(subdir_c, "r").read()
-        self.failUnlessIn("HellÒ patched subdir.\\n", data)
+        expected = u"Hell\N{LATIN CAPITAL LETTER O WITH GRAVE} patched subdir.\\n".encode("utf-8")
+        self.failUnlessIn(expected, data)
         self.failUnlessEqual(bs.getProperty("revision"),
                              self.helper.trunk[-2] or None)
         self.checkGotRevision(bs, self.helper.trunk[-2])
@@ -839,7 +843,8 @@ class VCBase(SignalMixin):
         subdir_c = os.path.join(self.slavebase, "vc-dir", "build",
                                 "subdir", "subdir.c")
         data = open(subdir_c, "r").read()
-        self.failUnlessIn("HellÒ patched subdir.\\n", data)
+        expected = u"Hell\N{LATIN CAPITAL LETTER O WITH GRAVE} patched subdir.\\n".encode("utf-8")
+        self.failUnlessIn(expected, data)
         self.failUnlessEqual(bs.getProperty("revision"),
                              self.helper.branch[-1] or None)
         self.failUnlessEqual(bs.getProperty("branch"), self.helper.branchname or None)
@@ -3275,4 +3280,5 @@ class Patch(VCBase, unittest.TestCase):
         # make sure the file actually got patched
         subdir_c = os.path.join(self.workdir, "subdir", "subdir.c")
         data = open(subdir_c, "r").read()
-        self.failUnlessIn("HellÒ patched subdir.\\n", data)
+        expected = u"Hell\N{LATIN CAPITAL LETTER O WITH GRAVE} patched subdir.\\n".encode("utf-8")
+        self.failUnlessIn(expected, data)
