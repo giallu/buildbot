@@ -1,5 +1,4 @@
 # -*- test-case-name: buildbot.test.test_web -*-
-# -*- coding: utf-8 -*-
 
 import os, time, shutil
 import warnings
@@ -474,7 +473,7 @@ c['builders'] = [
             bss.stepStarted()
 
             log1 = step1.addLog("output")
-            log1.addStdout("sÒme stdout\n")
+            log1.addStdout(u"s\N{LATIN CAPITAL LETTER O WITH GRAVE}me stdout\n".encode("utf-8"))
             log1.finish()
 
             log2 = step1.addHTMLLog("error", "<html>ouch</html>")
@@ -535,7 +534,7 @@ c['builders'] = [
                       client.getPage(self.getLogURL("setup", "output") + "/text"))
         def _check(logtext):
             # verify utf-8 encoding.
-            self.failUnlessEqual(logtext, "sÒme stdout\n")
+            self.failUnlessEqual(logtext, u"s\N{LATIN CAPITAL LETTER O WITH GRAVE}me stdout\n".encode("utf-8"))
         d.addCallback(_check)
         return d
 

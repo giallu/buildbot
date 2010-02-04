@@ -1,5 +1,4 @@
 # -*- test-case-name: buildbot.test.test_webparts -*-
-# -*- coding: utf-8 -*-
 
 import os
 import re
