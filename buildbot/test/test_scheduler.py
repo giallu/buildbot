@@ -7,9 +7,11 @@ from twisted.internet import defer, reactor
 from twisted.application import service
 from twisted.spread import pb
 
-from buildbot import scheduler, sourcestamp, buildset, status
+from buildbot import scheduler, sourcestamp, status
 from buildbot.changes.changes import Change
 from buildbot.scripts import tryclient
+
+from buildbot.test.runutils import MasterMixin
 
 
 class FakeMaster(service.MultiService):
@@ -21,30 +23,37 @@ class FakeMaster(service.MultiService):
             self.d = None
         return pb.Referenceable() # makes the cleanup work correctly
 
-class Scheduling(unittest.TestCase):
-    def setUp(self):
-        self.master = master = FakeMaster()
-        master.sets = []
-        master.startService()
-
-    def tearDown(self):
-        d = self.master.stopService()
-        return d
-
+class Scheduling(MasterMixin, unittest.TestCase):
     def addScheduler(self, s):
-        s.setServiceParent(self.master)
+        return self.master.scheduler_manager.updateSchedulers([s])
 
     def testPeriodic1(self):
-        self.addScheduler(scheduler.Periodic("quickly", ["a","b"], 2))
-        d = defer.Deferred()
-        reactor.callLater(5, d.callback, None)
+        self.basedir = "scheduler/Scheduling/Periodic1"
+        self.create_master()
+
+        def _delay(res):
+            d1 = defer.Deferred()
+            reactor.callLater(2, d1.callback, None)
+            return d1
+
+        d = self.addScheduler(scheduler.Periodic("quickly", ["a","b"], 2))
+        d.addCallback(lambda res: self.master.scheduler_manager.trigger())
+        d.addCallback(_delay)
+        d.addCallback(lambda res: self.master.scheduler_manager.trigger())
+        d.addCallback(_delay)
         d.addCallback(self._testPeriodic1_1)
         return d
     def _testPeriodic1_1(self, res):
-        self.failUnless(len(self.master.sets) > 1)
-        s1 = self.master.sets[0]
-        self.failUnlessEqual(s1.builderNames, ["a","b"])
-        self.failUnlessEqual(s1.reason, "The Periodic scheduler named 'quickly' triggered this build")
+        active_sets = self.master.db.get_active_buildset_ids()
+        self.failUnless(len(active_sets) > 1, active_sets)
+
+        requests = self.master.db.get_buildrequestids_for_buildset(active_sets[0])
+        self.failUnlessEqual(len(requests), 2, requests)
+        builderNames = sorted(requests.keys())
+        self.failUnlessEqual(builderNames, ["a","b"])
+
+        info = self.master.db.get_buildset_info(active_sets[0])
+        self.failUnlessEqual(info[1], "The Periodic scheduler named 'quickly' triggered this build")
 
     def testNightly(self):
         # now == 15-Nov-2005, 00:05:36 AM . By using mktime, this is
@@ -301,11 +310,11 @@ class Scheduling(unittest.TestCase):
         d = defer.Deferred()
         reactor.callLater(0, d.callback, None)
         return d
-    
+
     def testGetBuildSets(self):
         # validate IStatus.getBuildSets
         s = status.builder.Status(None, ".")
-        bs1 = buildset.BuildSet(["a","b"], sourcestamp.SourceStamp(),
+        bs1 = BuildSet(["a","b"], sourcestamp.SourceStamp(),
                                 reason="one", bsid="1")
         s.buildsetSubmitted(bs1.status)
         self.failUnlessEqual(s.getBuildSets(), [bs1.status])
