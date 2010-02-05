@@ -105,8 +105,8 @@ class MasterMixin:
 
     def connectOneSlave(self, slavename, opts={}):
         port = self.master.slavePort._port.getHost().port
-        self.slavebase = os.path.join(os.path.dirname(self.mktemp()),
-                                      "slavebase-%s" % slavename)
+        basedir = self.basedir or os.path.dirname(self.mktemp())
+        self.slavebase = os.path.join(basedir, "slavebase-%s" % slavename)
         os.mkdir(self.slavebase)
         slave = MyBuildSlave("localhost", port, slavename, "sekrit",
                              self.slavebase,

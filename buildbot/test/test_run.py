@@ -8,9 +8,12 @@ from buildbot import master, interfaces
 from buildbot.sourcestamp import SourceStamp
 from buildbot.changes import changes
 from buildbot.status import builder
-from buildbot.process.base import BuildRequest
+#from buildbot.process.base import BuildRequest
+from buildbot.process.builder import IDLE, BUILDING
+from buildbot.eventual import flushEventualQueue
 
-from buildbot.test.runutils import RunMixin, TestFlagMixin, rmtree
+from buildbot.test.runutils import RunMixin, MasterMixin, TestFlagMixin, rmtree, StallMixin
+from buildbot.test.pollmixin import PollMixin
 
 config_base = """
 from buildbot.process import factory
@@ -25,6 +28,9 @@ f2 = factory.BuildFactory([
     dummy.Dummy(timeout=1),
     dummy.RemoteDummy(timeout=2),
     ])
+
+f3 = factory.BuildFactory([dummy.Wait('f3')])
+f4 = factory.BuildFactory([dummy.Wait('f4')])
 
 BuildmasterConfig = c = {}
 c['slaves'] = [BuildSlave('bot1', 'sekrit')]
@@ -46,11 +52,11 @@ from buildbot.buildslave import BuildSlave
 c['slaves'] = [ BuildSlave('bot1', 'sekrit') ]
 
 from buildbot.scheduler import Scheduler
-c['schedulers'] = [Scheduler('dummy', None, 0.1, ['dummy'])]
+c['schedulers'] = [Scheduler('dummy', None, None, ['dummy'])]
 
 c['builders'] = [
     BuilderConfig(name='dummy', slavename='bot1',
-                  factory=f2, builddir='dummy1'),
+                  factory=f3, builddir='dummy1'),
 ]
 """
 
@@ -65,11 +71,11 @@ from buildbot.buildslave import BuildSlave
 c['slaves'] = [ BuildSlave('bot1', 'sekrit', max_builds=1) ]
 
 from buildbot.scheduler import Scheduler
-c['schedulers'] = [Scheduler('dummy', None, 0.1, ['dummy', 'dummy2'])]
+c['schedulers'] = [Scheduler('dummy', None, None, ['dummy', 'dummy2'])]
 
 c['builders'] = c['builders'] + [
-    BuilderConfig(name='dummy', slavename='bot1', factory=f2),
-    BuilderConfig(name='dummy2', slavename='bot1', factory=f2),
+    BuilderConfig(name='dummy', slavename='bot1', factory=f3),
+    BuilderConfig(name='dummy2', slavename='bot1', factory=f4),
 ]
 """
 
@@ -113,103 +119,155 @@ c['builders'] = c['builders'] + [
 ]
 """
 
-class Run(unittest.TestCase):
-    def rmtree(self, d):
-        rmtree(d)
-
+class Run(MasterMixin, StallMixin, unittest.TestCase):
     def testMaster(self):
-        self.rmtree("basedir")
-        os.mkdir("basedir")
-        m = master.BuildMaster("basedir")
-        m.loadConfig(config_run)
-        m.readConfig = True
-        m.startService()
-        cm = m.change_svc
-        c = changes.Change("bob", ["Makefile", "foo/bar.c"], "changed stuff")
-        cm.addChange(c)
-        # verify that the Scheduler is now waiting
-        s = m.allSchedulers()[0]
-        self.failUnless(s.timer)
-        # halting the service will also stop the timer
-        d = defer.maybeDeferred(m.stopService)
+        self.basedir = "run/Run/Master"
+        self.create_master()
+        m = self.master
+        d = m.loadConfig(config_run)
+        def _then(ign):
+            cm = m.change_svc
+            c = changes.Change("bob", ["Makefile", "foo/bar.c"],
+                               "changed stuff")
+            cm.addChange(c)
+            return flushEventualQueue()
+        d.addCallback(_then)
+        d.addCallback(self.stall, 1.0) # needs time to finish. TODO: why is
+                                       # flushEventualQueue not sufficient?
+        # we used to check that the Scheduler is now waiting, but when its
+        # state moved into the database, that became a nuisance
+        def _check(ign):
+            # verify that the Scheduler is now waiting
+            s = m.allSchedulers()[0]
+            sid = s.schedulerid
+            state = m.db.runInteractionNow(lambda t:
+                                         m.db.scheduler_get_state(sid, t))
+            self.failUnlessEqual(state["last_processed"], 1)
+        d.addCallback(_check)
         return d
 
-class CanStartBuild(RunMixin, unittest.TestCase):
-    def rmtree(self, d):
-        rmtree(d)
+from buildbot.slave.commands import waitCommandRegistry
 
+class WaitMixin:
+    # to use this, put a steps.dummy.Wait(handle="XYZ") in your test build
+    # factory, prepare, then start the build with reason="ABC". Then use
+    # something like this:
+    #
+    #  self.prepare_wait("XYZ", "ABC") # must be done before build starts
+    #  d = run_one_build(self.control, buildername, ss, reason="ABC")
+    #  d.addCallback(self.wait_until_step_reached, "XYZ", "ABC")
+    #  def assert_is_in_step(ign):
+    #      # now the build will be in the middle of the Wait step
+    #      # you must release it to continue
+    #      return self.release_build("XYZ", "ABC")
+    #  d.addCallback(assert_is_in_step)
+    #  d.addCallback(wait_for_build_to_finish)
+    _wait_handles = None
+
+    def prepare_wait(self, handle, reason):
+        if self._wait_handles is None:
+            self._wait_handles = {}
+        h = (handle, reason)
+        d1, d2 = defer.Deferred(), defer.Deferred()
+        self._wait_handles[h] = (d1, d2)
+        from buildbot.slave.commands import waitCommandRegistry
+        def _catch():
+            d1.callback(None)
+            return d2
+        waitCommandRegistry[h] = _catch
+    def wait_until_step_reached(self, ign, handle, reason):
+        h = (handle, reason)
+        d1, d2 = self._wait_handles[h]
+        return d1
+    def release_build(self, res, handle, reason):
+        h = (handle, reason)
+        d1, d2 = self._wait_handles[h]
+        del self._wait_handles[h]
+        d2.callback(None)
+        return res
+    def release_all_builds(self, res=None):
+        for (d1,d2) in self._wait_handles.values():
+            d2.callback(None)
+        del self._wait_handles
+        return res
+
+class CanStartBuild(MasterMixin, StallMixin, WaitMixin, unittest.TestCase):
     def testCanStartBuild(self):
-        return self.do_test(config_can_build, True)
+        self.basedir = "run/CanStartBuild/CanStartBuild"
+        self.prepare_wait("f3", "scheduler")
+        d = self.do_test(config_can_build)
+        d.addCallback(self.wait_until_step_reached, "f3", "scheduler")
+        d.addCallback(self._check, BUILDING)
+        d.addCallback(self.release_build, "f3", "scheduler")
+        d.addCallback(lambda bs: bs.waitUntilFinished())
+        return d
 
     def testCantStartBuild(self):
-        return self.do_test(config_cant_build, False)
-
-    def do_test(self, config, builder_should_run):
-        self.master.loadConfig(config)
-        self.master.readConfig = True
-        self.master.startService()
-        d = self.connectSlave()
-
-        # send a change
-        cm = self.master.change_svc
-        c = changes.Change("bob", ["Makefile", "foo/bar.c"], "changed stuff")
-        cm.addChange(c)
-
-        d.addCallback(self._do_test1, builder_should_run)
-
+        self.basedir = "run/CanStartBuild/CantStartBuild"
+        d = self.do_test(config_cant_build)
+        d.addCallback(self._check, IDLE)
         return d
 
-    def _do_test1(self, res, builder_should_run):
-        # delay a little bit. Note that relying upon timers is a bit fragile,
-        # in this case we're hoping that our 0.5 second timer will land us
-        # somewhere in the middle of the [0.1s, 3.1s] window (after the 0.1
-        # second Scheduler fires, then during the 3-second build), so that
-        # when we sample BuildSlave.state, we'll see BUILDING (or IDLE if the
-        # slave was told to be unavailable). On a heavily loaded system, our
-        # 0.5 second timer might not actually fire until after the build has
-        # completed. In the long run, it would be good to change this test to
-        # pass under those circumstances too.
-        d = defer.Deferred()
-        reactor.callLater(.5, d.callback, builder_should_run)
-        d.addCallback(self._do_test2)
+    def do_test(self, config):
+        self.create_master()
+        d = self.master.loadConfig(config)
+        d.addCallback(lambda ign: self.connectSlave())
+        def _then(ign):
+            # send a change
+            cm = self.master.change_svc
+            c = changes.Change("bob", ["Makefile", "foo/bar.c"],
+                               "changed stuff")
+            cm.addChange(c)
+        d.addCallback(_then)
         return d
 
-    def _do_test2(self, builder_should_run):
+    def _check(self, ign, expected_state):
         b = self.master.botmaster.builders['dummy']
         self.failUnless(len(b.slaves) == 1)
+        buildslave = b.slaves[0]
+        self.failUnlessEqual(buildslave.state, expected_state)
+        if buildslave.state == BUILDING:
+            bs = self.master.status.getBuilder("dummy").getCurrentBuilds()[0]
+            return bs
+        return None
 
-        bs = b.slaves[0]
-        from buildbot.process.builder import IDLE, BUILDING
-        if builder_should_run:
-            self.failUnlessEqual(bs.state, BUILDING)
-        else:
-            self.failUnlessEqual(bs.state, IDLE)
 
+class FirstToFire(defer.Deferred):
+    def __init__(self, *ds):
+        defer.Deferred.__init__(self)
+        # self.called
+        for d in ds:
+            d.addBoth(self._one_fired)
+    def _one_fired(self, res):
+        if not self.called:
+            self.callback(res)
+        return res
 
-class ConcurrencyLimit(RunMixin, unittest.TestCase):
+class ConcurrencyLimit(MasterMixin, WaitMixin, StallMixin, PollMixin,
+                       unittest.TestCase):
 
     def testConcurrencyLimit(self):
+        self.basedir = "run/ConcurrencyLimit/ConcurrencyLimit"
+        self.create_master()
+        self.prepare_wait("f3", "scheduler")
+        self.prepare_wait("f4", "scheduler")
         d = self.master.loadConfig(config_concurrency)
-        d.addCallback(lambda res: self.master.startService())
         d.addCallback(lambda res: self.connectSlave())
 
         def _send(res):
             # send a change. This will trigger both builders at the same
             # time, but since they share a slave, the max_builds=1 setting
             # will insure that only one of the two builds gets to run.
+            # TODO: setting max_builds=2 doesn't cause this to fail.
+            # TODO: sometimes this errors out
             cm = self.master.change_svc
             c = changes.Change("bob", ["Makefile", "foo/bar.c"],
                                "changed stuff")
             cm.addChange(c)
+            d1 = self.wait_until_step_reached(None, "f3", "scheduler")
+            d2 = self.wait_until_step_reached(None, "f4", "scheduler")
+            return FirstToFire(d1, d2)
         d.addCallback(_send)
-
-        def _delay(res):
-            d1 = defer.Deferred()
-            reactor.callLater(1, d1.callback, None)
-            # this test depends upon this 1s delay landing us in the middle
-            # of one of the builds.
-            return d1
-        d.addCallback(_delay)
 
         def _check(res):
             builders = [ self.master.botmaster.builders[bn]
@@ -217,66 +275,70 @@ class ConcurrencyLimit(RunMixin, unittest.TestCase):
             for builder in builders:
                 self.failUnless(len(builder.slaves) == 1)
 
-            from buildbot.process.builder import BUILDING
             building_bs = [ builder
                             for builder in builders
                             if builder.slaves[0].state == BUILDING ]
             # assert that only one build is running right now. If the
             # max_builds= weren't in effect, this would be 2.
             self.failUnlessEqual(len(building_bs), 1)
+            self.release_all_builds()
         d.addCallback(_check)
-
+        # this _wait approach sometimes fails, leaving a timer lying around
+        # which fires after the master has shut down (causing an error). I
+        # don't know why. I had to punt and add the stall().
+        def _wait():
+            s = self.master.status
+            if s.getBuilder("dummy").getLastFinishedBuild() is None:
+                return False
+            if s.getBuilder("dummy2").getLastFinishedBuild() is None:
+                return False
+            return True
+        d.addCallback(lambda ign: self.poll(_wait))
+        d.addCallback(self.stall, 0.5)
         return d
 
 
-class Ping(RunMixin, unittest.TestCase):
+class Ping(MasterMixin, unittest.TestCase):
     def testPing(self):
-        self.master.loadConfig(config_2)
-        self.master.readConfig = True
-        self.master.startService()
-
-        d = self.connectSlave()
-        d.addCallback(self._testPing_1)
+        self.basedir = "run/Ping/Ping"
+        self.create_master()
+        c = interfaces.IControl(self.master)
+        d = self.master.loadConfig(config_2)
+        d.addCallback(lambda ign: self.connectSlave())
+        d.addCallback(lambda ign: c.getBuilder("dummy").ping())
         return d
 
-    def _testPing_1(self, res):
-        d = interfaces.IControl(self.master).getBuilder("dummy").ping()
-        d.addCallback(self._testPing_2)
-        return d
-
-    def _testPing_2(self, res):
-        pass
-
-class BuilderNames(unittest.TestCase):
+class BuilderNames(MasterMixin, unittest.TestCase):
 
     def testGetBuilderNames(self):
-        os.mkdir("bnames")
-        m = master.BuildMaster("bnames")
-        s = m.getStatus()
+        self.basedir = "run/BuilderNames/GetBuilderNames"
+        self.create_master()
+        s = self.master.getStatus()
+        d = self.master.loadConfig(config_3)
+        def _check(ign):
+            self.failUnlessEqual(s.getBuilderNames(),
+                                 ["dummy", "test dummy", "adummy", "bdummy"])
+            self.failUnlessEqual(s.getBuilderNames(categories=['test']),
+                                 ["test dummy", "bdummy"])
+        d.addCallback(_check)
+        return d
 
-        m.loadConfig(config_3)
-        m.readConfig = True
-
-        self.failUnlessEqual(s.getBuilderNames(),
-                             ["dummy", "test dummy", "adummy", "bdummy"])
-        self.failUnlessEqual(s.getBuilderNames(categories=['test']),
-                             ["test dummy", "bdummy"])
-
-class Disconnect(RunMixin, unittest.TestCase):
+class Disconnect(RunMixin, StallMixin, unittest.TestCase):
 
     def setUp(self):
         RunMixin.setUp(self)
-        
         # verify that disconnecting the slave during a build properly
         # terminates the build
         m = self.master
+        d = self.master.loadConfig(config_2)
+        d.addCallback(self._earlycheck)
+        d.addCallback(lambda ign: self.connectSlave())
+        d.addCallback(self.stall, 0.5)
+        d.addCallback(self._disconnectSetup_1)
+        return d
+
+    def _earlycheck(self, ign):
         s = self.status
-        c = self.control
-
-        m.loadConfig(config_2)
-        m.readConfig = True
-        m.startService()
-
         self.failUnlessEqual(s.getBuilderNames(), ["dummy", "test dummy"])
         self.s1 = s1 = s.getBuilder("dummy")
         self.failUnlessEqual(s1.getName(), "dummy")
@@ -284,10 +346,6 @@ class Disconnect(RunMixin, unittest.TestCase):
         self.failUnlessEqual(s1.getCurrentBuilds(), [])
         self.failUnlessEqual(s1.getLastFinishedBuild(), None)
         self.failUnlessEqual(s1.getBuild(-1), None)
-
-        d = self.connectSlave()
-        d.addCallback(self._disconnectSetup_1)
-        return d
 
     def _disconnectSetup_1(self, res):
         self.failUnlessEqual(self.s1.getState(), ("idle", []))
@@ -314,13 +372,13 @@ class Disconnect(RunMixin, unittest.TestCase):
 
     def submitBuild(self):
         ss = SourceStamp()
-        br = BuildRequest("forced build", ss, "dummy")
-        self.control.getBuilder("dummy").requestBuild(br)
+        bss = self.control.submitBuildSet(["dummy"], ss, "forced build")
+        brs = bss.getBuildRequests()[0]
         d = defer.Deferred()
         def _started(bc):
-            br.unsubscribe(_started)
+            brs.unsubscribe(_started)
             d.callback(bc)
-        br.subscribe(_started)
+        brs.subscribe(_started)
         return d
 
     def testIdle2(self):
@@ -605,14 +663,13 @@ class Disconnect2(RunMixin, unittest.TestCase):
                     "hey, slave's Broker is still marked for death")
 
 
-class Basedir(RunMixin, unittest.TestCase):
+class Basedir(MasterMixin, unittest.TestCase):
     def testChangeBuilddir(self):
+        self.basedir = "run/Basedir/ChangeBuilddir"
+        self.create_master()
         m = self.master
-        m.loadConfig(config_4)
-        m.readConfig = True
-        m.startService()
-        
-        d = self.connectSlave()
+        d = m.loadConfig(config_4)
+        d.addCallback(lambda ign: self.connectSlave())
         d.addCallback(self._testChangeBuilddir_1)
         return d
 
@@ -623,7 +680,7 @@ class Basedir(RunMixin, unittest.TestCase):
         # slavebuilddir value.
         self.failUnlessEqual(builder.builddir, "sdummy")
         self.failUnlessEqual(builder.basedir,
-                             os.path.join("slavebase-bot1", "sdummy"))
+                             os.path.join(self.basedir, "slavebase-bot1", "sdummy"))
 
         d = self.master.loadConfig(config_4_newbasedir)
         d.addCallback(self._testChangeBuilddir_2)
@@ -638,7 +695,7 @@ class Basedir(RunMixin, unittest.TestCase):
         # the basedir should be updated
         self.failUnlessEqual(builder.builddir, "dummy2")
         self.failUnlessEqual(builder.basedir,
-                             os.path.join("slavebase-bot1", "dummy2"))
+                             os.path.join(self.basedir, "slavebase-bot1", "dummy2"))
 
         # add a new builder, which causes the basedir list to be reloaded
         d = self.master.loadConfig(config_4_newbuilder)
@@ -1205,7 +1262,6 @@ class GracefulShutdownBusy(RunMixin, unittest.TestCase):
                          for bn in ('dummy', 'dummy2') ]
             for builder in builders:
                 self.failUnless(len(builder.slaves) == 1)
-            from buildbot.process.builder import BUILDING
             building_bs = [ builder
                             for builder in builders
                             if builder.slaves[0].state == BUILDING ]
@@ -1223,7 +1279,6 @@ class GracefulShutdownBusy(RunMixin, unittest.TestCase):
                          for bn in ('dummy', 'dummy2') ]
             for builder in builders:
                 self.failUnless(len(builder.slaves) == 1)
-            from buildbot.process.builder import BUILDING
             building_bs = [ builder
                             for builder in builders
                             if builder.slaves[0].state == BUILDING ]
@@ -1250,7 +1305,6 @@ class GracefulShutdownBusy(RunMixin, unittest.TestCase):
             self.assertEquals(self.did_shutdown, True)
             builders = [ self.master.botmaster.builders[bn]
                          for bn in ('dummy', 'dummy2') ]
-            from buildbot.process.builder import BUILDING
             building_bs = [ builder
                             for builder in builders
                             if builder.slaves[0].state == BUILDING ]
