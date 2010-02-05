@@ -122,6 +122,7 @@ class LoopBase(service.MultiService):
         self._loop_running = True
         self._start_timer = reactor.callLater(0, self._loop_start)
 
+
     # subclasses must implement get_processors()
 
     def _loop_start(self):

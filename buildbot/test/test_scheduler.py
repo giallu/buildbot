@@ -36,11 +36,27 @@ class Scheduling(MasterMixin, unittest.TestCase):
             reactor.callLater(2, d1.callback, None)
             return d1
 
-        d = self.addScheduler(scheduler.Periodic("quickly", ["a","b"], 2))
-        d.addCallback(lambda res: self.master.scheduler_manager.trigger())
-        d.addCallback(_delay)
-        d.addCallback(lambda res: self.master.scheduler_manager.trigger())
-        d.addCallback(_delay)
+        t = [0]
+        def getCurrentTime():
+            print "TIME IS", t[0]
+            return t[0]
+
+        def addTime(n):
+            t[0] += n
+            print "NEW TIME IS", t[0]
+
+        s = scheduler.Periodic("quickly", ["a", "b"], 2)
+        s.getCurrentTime = getCurrentTime
+
+        d = self.addScheduler(s)
+        d.addCallback(lambda ign: self.master.scheduler_manager.trigger())
+        d2 = self.master.scheduler_manager.when_quiet()
+        d.addCallback(lambda ign: d2)
+
+        d.addCallback(lambda ign: addTime(3))
+        d.addCallback(lambda ign: self.master.scheduler_manager.trigger())
+        d3 = self.master.scheduler_manager.when_quiet()
+        d.addCallback(lambda ign: d3)
         d.addCallback(self._testPeriodic1_1)
         return d
     def _testPeriodic1_1(self, res):
