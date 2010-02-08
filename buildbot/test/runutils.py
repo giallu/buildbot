@@ -225,11 +225,28 @@ class MasterMixin:
         # the slave has died, its host sent a FIN. The .notifyOnDisconnect
         # callbacks will terminate the current step, so the build should be
         # flunked (no further steps should be started).
-        self.slaves[slavename].bf.continueTrying = 0
-        bot = self.slaves[slavename].getServiceNamed("bot")
+        s = self.slaves[slavename]
+        s.bf.continueTrying = 0
+        bot = s.getServiceNamed("bot")
         broker = bot.builders[buildername].remote.broker
         broker.transport.loseConnection()
         del self.slaves[slavename]
+        #return s.waitUntilDisconnected()
+        return self.master.botmaster.waitUntilBuilderDetached(buildername)
+
+    def wait_until_idle(self, ign=None):
+        done_d = defer.Deferred()
+        d = flushEventualQueue()
+        def _check(ign):
+            if not self.master.db.has_pending_operations():
+                done_d.callback(None)
+                return
+            d2 = defer.Deferred()
+            d2.addCallback(flushEventualQueue)
+            d2.addCallback(_check)
+            reactor.callLater(0.01, d2.callback, None)
+        d.addCallback(_check)
+        return done_d
 
     def disappearSlave(self, slavename="bot1", buildername="dummy",
                        allowReconnect=False):

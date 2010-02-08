@@ -378,6 +378,8 @@ class DBConnector(util.ComparableMixin):
         self._pending_notifications = []
         self._subscribers = util.defaultdict(set)
 
+        self._pending_operation_count = 0
+
     def start(self):
         # this only needs to be called from non-reactor contexts, like
         # runner.upgradeMaster and other CLI commands
@@ -494,6 +496,7 @@ class DBConnector(util.ComparableMixin):
         self._subscribers[category].add(observer)
 
     def runQuery(self, *args, **kwargs):
+        self._pending_operation_count += 1
         start = time.time()
         t = self._start_operation()
         d = self._pool.runQuery(*args, **kwargs)
@@ -502,6 +505,7 @@ class DBConnector(util.ComparableMixin):
     def _runQuery_done(self, res, start, t):
         self._end_operation(t)
         self._add_query_time(start)
+        self._pending_operation_count -= 1
         return res
 
     def _add_query_time(self, start):
@@ -511,6 +515,7 @@ class DBConnector(util.ComparableMixin):
             self._query_times.popleft()
 
     def runInteraction(self, *args, **kwargs):
+        self._pending_operation_count += 1
         start = time.time()
         t = self._start_operation()
         d = self._pool.runInteraction(*args, **kwargs)
@@ -519,6 +524,7 @@ class DBConnector(util.ComparableMixin):
     def _runInteraction_done(self, res, start, t):
         self._end_operation(t)
         self._add_query_time(start)
+        self._pending_operation_count -= 1
         return res
 
     # ChangeManager methods
@@ -1194,6 +1200,12 @@ class DBConnector(util.ComparableMixin):
         else:
             q = self.quoteq("INSERT INTO generic (`key`, value) VALUES (?,?)")
             t.execute(q, (key, simplejson.dumps(value)))
+
+    # test/debug methods
+
+    def has_pending_operations(self):
+        return bool(self._pending_operation_count)
+
 
 threadable.synchronize(DBConnector)
 

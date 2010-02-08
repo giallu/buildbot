@@ -323,18 +323,17 @@ class BuilderNames(MasterMixin, unittest.TestCase):
         d.addCallback(_check)
         return d
 
-class Disconnect(RunMixin, StallMixin, unittest.TestCase):
+class Disconnect(MasterMixin, StallMixin, PollMixin, unittest.TestCase):
+    # verify that disconnecting the slave during a build properly
+    # terminates the build
 
-    def setUp(self):
-        RunMixin.setUp(self)
-        # verify that disconnecting the slave during a build properly
-        # terminates the build
+    def startup(self):
         m = self.master
         d = self.master.loadConfig(config_2)
         d.addCallback(self._earlycheck)
         d.addCallback(lambda ign: self.connectSlave())
         d.addCallback(self.stall, 0.5)
-        d.addCallback(self._disconnectSetup_1)
+        d.addCallback(self._earlycheck2)
         return d
 
     def _earlycheck(self, ign):
@@ -347,9 +346,14 @@ class Disconnect(RunMixin, StallMixin, unittest.TestCase):
         self.failUnlessEqual(s1.getLastFinishedBuild(), None)
         self.failUnlessEqual(s1.getBuild(-1), None)
 
-    def _disconnectSetup_1(self, res):
+    def _earlycheck2(self, res):
         self.failUnlessEqual(self.s1.getState(), ("idle", []))
 
+    def test_null(self):
+        self.basedir = "run/Disconnect/null"
+        self.create_master()
+        d = self.startup()
+        return d
 
     def verifyDisconnect(self, bs):
         self.failUnless(bs.isFinished())
@@ -381,30 +385,42 @@ class Disconnect(RunMixin, StallMixin, unittest.TestCase):
         brs.subscribe(_started)
         return d
 
-    def testIdle2(self):
-        # now suppose the slave goes missing
-        self.disappearSlave(allowReconnect=False)
-
-        # forcing a build will work: the build detect that the slave is no
-        # longer available and will be re-queued. Wait 5 seconds, then check
-        # to make sure the build is still in the 'waiting for a slave' queue.
-        req = BuildRequest("forced build", SourceStamp(), "test_builder")
-        self.failUnlessEqual(req.startCount, 0)
-        self.control.getBuilder("dummy").requestBuild(req)
-        # this should ping the slave, which doesn't respond (and eventually
-        # times out). The BuildRequest will be re-queued, and its .startCount
-        # will be incremented.
-        self.killSlave()
-        d = defer.Deferred()
-        d.addCallback(self._testIdle2_1, req)
-        reactor.callLater(3, d.callback, None)
+    def testIdle(self):
+        # if the slave does not respond to a ping when the build starts, the
+        # build will be put back in the queue (i.e. unclaimed)
+        self.basedir = "run/Disconnect/idle"
+        self.create_master()
+        db = self.master.db
+        d = self.startup()
+        def _then(ign):
+            self.disappearSlave(allowReconnect=False)
+            # the slave is now frozen, and won't respond to a ping. We submit
+            # a build request, and wait for it to be claimed (shouldn't take
+            # long). The build should be stuck in the waiting-for-pong state.
+            ss = SourceStamp()
+            bss = self.control.submitBuildSet(["dummy"], ss, "forced build")
+            brs = bss.getBuildRequests()[0]
+            self.brid = brs.brid
+        d.addCallback(_then)
+        def _get_claim(ign=None):
+            def _db(t):
+                t.execute(db.quoteq("SELECT claimed_at FROM buildrequests"
+                                    " WHERE id=?"),
+                          (self.brid,))
+                return t.fetchall()[0][0]
+            claimed_at = db.runInteractionNow(_db)
+            return claimed_at
+        def _is_claimed():
+            return bool(_get_claim() > 0)
+        d.addCallback(lambda ign: self.poll(_is_claimed))
+        # now we kill the slave, which drops the TCP connection and halts the
+        # ping. The BuildRequest should be put back into the unclaimed state.
+        d.addCallback(lambda ign: self.killSlave())
+        d.addCallback(self.wait_until_idle)
+        d.addCallback(_get_claim)
+        d.addCallback(lambda claim: self.failUnlessEqual(claim, 0))
         return d
-    testIdle2.timeout = 5
-
-    def _testIdle2_1(self, res, req):
-        self.failUnlessEqual(req.startCount, 1)
-        cancelled = req.cancel()
-        self.failUnless(cancelled)
+    testIdle.timeout = 10
 
 
     def testBuild1(self):
