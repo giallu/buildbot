@@ -231,7 +231,8 @@ except ImportError:
 else:
     setup_args['install_requires'] = [
         'twisted >= 2.0.0',
-        'Jinja2'
+        'Jinja2',
+        'simplejson',
     ]
     entry_points={
         'console_scripts': [
