@@ -107,6 +107,9 @@ class _Base(service.MultiService, ComparableMixin):
         self.parent.publish_buildset(self.name, bsid, t)
         return bsid
 
+    def getCurrentTime(self):
+        return time.time()
+
 class ClassifierMixin:
 
     def classify_changes(self, t):
@@ -218,7 +221,7 @@ class Scheduler(_Base, ClassifierMixin):
         all_changes = important + unimportant
         most_recent = max([c.when for c in all_changes])
         if self.treeStableTimer is not None:
-            now = time.time()
+            now = self.getCurrentTime()
             stable_at = most_recent + self.treeStableTimer
             if stable_at > now:
                 # Wake up one second late, to avoid waking up too early and

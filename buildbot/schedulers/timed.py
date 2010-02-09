@@ -83,7 +83,7 @@ class Periodic(_Base, TimedBuildMixin):
         db = self.parent.db
         s = db.runInteractionNow(self.get_state)
         last_build = s["last_build"]
-        now = time.time()
+        now = self.getCurrentTime()
         if last_build is None:
             return [now]
         return [last_build + self.periodicBuildTimer]
@@ -94,7 +94,7 @@ class Periodic(_Base, TimedBuildMixin):
         return d
 
     def _run(self, t):
-        now = time.time()
+        now = self.getCurrentTime()
         s = self.get_state(t)
         last_build = s["last_build"]
         if last_build is None:
@@ -194,13 +194,13 @@ class Nightly(_Base, ClassifierMixin, TimedBuildMixin):
         if fileIsImportant:
             assert callable(fileIsImportant)
             self.fileIsImportant = fileIsImportant
-        self._start_time = time.time()
+        self._start_time = self.getCurrentTime()
 
     def get_initial_state(self, max_changeid):
         return {"last_build": None}
 
     def getPendingBuildTimes(self):
-        now = time.time()
+        now = self.getCurrentTime()
         next = self._calculateNextRunTimeFrom(now)
         # note: this ignores onlyIfChanged
         return [next]
@@ -215,7 +215,7 @@ class Nightly(_Base, ClassifierMixin, TimedBuildMixin):
         return d
 
     def _check_timer(self, t):
-        now = time.time()
+        now = self.getCurrentTime()
         s = self.get_state(t)
         last_build = s["last_build"]
         if last_build is None:
