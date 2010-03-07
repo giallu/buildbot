@@ -15,6 +15,7 @@ class TempfileWriter(pb.Referenceable):
 
 
 from twisted.python import log
+from twisted.internet import threads
 from buildbot.process.buildstep import BuildStep
 from boto.s3.connection import S3Connection
 from boto.s3.key import Key
@@ -97,7 +98,7 @@ class S3FileUpload(_TransferBuildStep):
         d = self.runCommand(self.cmd)
         d.addCallback(self.gotFile).addErrback(self.failed)
 
-    def gotFile( self, result ):
+    def gotFile(self, result):
         # TODO: check if upload to master was successful
         
         self.step_status.setText(['Got file on master, sending to S3',])
@@ -105,12 +106,14 @@ class S3FileUpload(_TransferBuildStep):
 
         self.fileWriter.buffer.seek(0)
 
-        # get the key item
-        k = Key(self.bk)
-        # set key name
-        k.key = self.source
-        k.set_contents_from_file( self.fileWriter.buffer )
-        k.set_acl( self.mode )
+        def _s3upload(self):
+            # get the key item
+            k = Key(self.bk)
+            # set key name
+            k.key = self.source
+            k.set_contents_from_file(self.fileWriter.buffer)
+            k.set_acl(self.mode)
 
-        BuildStep.finished( self, SUCCESS )
+        d = threads.deferToThread(_s3upload)
+        d.addCallback(self.finished).addErrback(self.failed)
 
